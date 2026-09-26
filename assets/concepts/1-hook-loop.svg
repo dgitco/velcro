@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="512" height="512" color="#111"><defs><clipPath id="cl"><circle cx="26.2" cy="35.5" r="6"/></clipPath><clipPath id="cr"><circle cx="37.8" cy="35.5" r="6"/></clipPath>
+<mask id="mr" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><path clip-path="url(#cl)" d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="#000" stroke-width="12"/></mask>
+<mask id="mh" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><circle clip-path="url(#cr)" cx="32" cy="46" r="12" fill="none" stroke="#000" stroke-width="12"/></mask></defs>
+<circle cx="32" cy="46" r="12" fill="none" stroke="currentColor" stroke-width="6" mask="url(#mr)"/>
+<path d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" mask="url(#mh)"/></svg>
