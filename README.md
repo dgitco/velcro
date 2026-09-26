@@ -1,4 +1,6 @@
-# velcro
+<p align="center"><img src="assets/logo/velcro-icon.svg" width="128" alt="velcro"></p>
+
+<h1 align="center">velcro</h1>
 
 Keep network shares stuck to your Mac.
 
@@ -49,6 +51,10 @@ A LaunchAgent runs `velcro run` every 60 seconds and whenever `/Library/Preferen
 
 - **Fallback hosts and untrusted networks:** velcro connects to the first host that answers on port 445. A private LAN address like `192.168.1.10` may belong to a stranger's device on café Wi‑Fi. If you roam, prefer a name only your network resolves (Tailscale MagicDNS, `.local` Bonjour names) or list the private IP last.
 - A share that drops while a file is open can still make Finder hang for a moment — that's the macOS SMB client, not velcro.
+
+## Design
+
+Logo and menu bar states live in `assets/logo/` (open `mockup.html`). Every draft that led there is kept in `assets/concepts/`.
 
 ## License
 
