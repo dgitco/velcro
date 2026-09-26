@@ -1,0 +1,187 @@
+#!/bin/zsh
+# velcro — keep network shares stuck to your Mac.
+# Remounts SMB shares after Wi-Fi drops, sleep, or network changes. No popups.
+emulate -L zsh
+setopt pipe_fail
+
+VERSION=0.1.0
+SELF=${0:A}
+LABEL=io.github.dgitco.velcro
+CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
+CONF=$CONF_DIR/mounts
+PAUSE=$CONF_DIR/paused
+LOG=$HOME/Library/Logs/velcro.log
+PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
+BIN=$HOME/.local/bin/velcro
+INTERVAL=60
+
+log() { print -r -- "$(date '+%F %T') $*" >>"$LOG"; }
+
+# Config lines: <smb url> [fallback host ...]
+# e.g.  smb://me@nas.tailnet.ts.net/home
+#       smb://me@192.168.1.10/media nas.tailnet.ts.net
+entries() {
+  [[ -r $CONF ]] || return 0
+  grep -vE '^[[:space:]]*(#|$)' "$CONF"
+}
+
+# Split "smb://user@host/share" into globals: user host share (share stays URL-encoded).
+parse() {
+  local url=${1#smb://}
+  user= host= share=
+  if [[ $url == *@* ]]; then user=${url%%@*}; url=${url#*@}; fi
+  host=${url%%/*}
+  share=${url#*/}
+  [[ -n $host && -n $share && $share != "$url" ]]
+}
+
+# Is <share> mounted from any of <hosts...>? Reads `mount` only; never touches the share.
+is_mounted() {
+  local share=$1; shift
+  local h mounts=$(mount -t smbfs)
+  for h in "$@"; do
+    print -r -- "$mounts" | grep -qiF -- "@$h/$share on " && return 0
+    print -r -- "$mounts" | grep -qiF -- "//$h/$share on " && return 0
+  done
+  return 1
+}
+
+reachable() { nc -z -G 2 "$1" 445 </dev/null >/dev/null 2>&1; }
+
+mount_share() {
+  local url=$1
+  # Errors go to the log, never to a dialog. A login prompt only appears if the keychain has no password.
+  osascript -e 'on run argv' -e 'try' -e 'mount volume (item 1 of argv)' \
+    -e 'on error m' -e 'log m' -e 'end try' -e 'end run' "$url" </dev/null >/dev/null 2>>"$LOG"
+}
+
+cmd_run() {
+  [[ -e $PAUSE ]] && return 0
+  # Don't stack login prompts if one is already waiting.
+  pgrep -f "osascript.*mount volume" >/dev/null && return 0
+  [[ -f $LOG && $(stat -f %z "$LOG") -gt 1048576 ]] && mv -f "$LOG" "$LOG.1"
+
+  local line url h
+  local -a words hosts
+  entries | while IFS= read -r line; do
+    words=(${(z)line}); url=${words[1]}
+    parse "$url" || { log "bad entry: $line"; continue; }
+    hosts=($host ${words[2,-1]})
+    is_mounted "$share" $hosts && continue
+    for h in $hosts; do
+      reachable "$h" || continue
+      log "mount //$h/$share"
+      mount_share "smb://${user:+$user@}$h/$share"
+      break
+    done
+  done
+}
+
+cmd_status() {
+  local line url h state
+  local -a words hosts
+  if launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; then
+    print "agent:  running (every ${INTERVAL}s + on network change)"
+  else
+    print "agent:  not installed  →  velcro install"
+  fi
+  [[ -e $PAUSE ]] && print "state:  paused  →  velcro resume" || print "state:  active"
+  print
+  entries | while IFS= read -r line; do
+    words=(${(z)line}); url=${words[1]}
+    parse "$url" || continue
+    hosts=($host ${words[2,-1]})
+    if is_mounted "$share" $hosts; then state="● mounted"
+    else
+      state="○ offline"
+      for h in $hosts; do reachable "$h" && { state="◐ reachable, not mounted"; break; }; done
+    fi
+    printf '%-26s %s\n' "$state" "$line"
+  done
+  [[ -s $CONF ]] || print "no shares yet  →  velcro add smb://user@host/share"
+}
+
+cmd_add() {
+  [[ -n $1 ]] || { print -u2 "usage: velcro add smb://user@host/share [fallback-host ...]"; return 2; }
+  local url=${1// /%20}
+  parse "$url" || { print -u2 "not an smb url: $1"; return 2; }
+  mkdir -p "$CONF_DIR"
+  if [[ -r $CONF ]] && grep -qF -- "$url" "$CONF"; then print "already added: $url"; return 0; fi
+  print -r -- "$url${2:+ ${@[2,-1]}}" >>"$CONF"
+  print "added: $url${2:+ (fallback: ${@[2,-1]})}"
+  cmd_run
+}
+
+cmd_rm() {
+  [[ -n $1 && -r $CONF ]] || { print -u2 "usage: velcro rm <url or share name>"; return 2; }
+  local pat=${1// /%20} tmp=$(mktemp)
+  grep -vF -- "$pat" "$CONF" >"$tmp"
+  if cmp -s "$tmp" "$CONF"; then rm -f "$tmp"; print -u2 "no match: $1"; return 1; fi
+  mv "$tmp" "$CONF"; print "removed: $1  (still mounted? eject it in Finder)"
+}
+
+cmd_install() {
+  mkdir -p "${BIN:h}" "${PLIST:h}" "${LOG:h}" "$CONF_DIR"
+  local self=$SELF
+  [[ $self == "${BIN:A}" ]] || { cp -f "$self" "$BIN"; chmod +x "$BIN"; }
+  cat >"$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key><array><string>$BIN</string><string>run</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>$INTERVAL</integer>
+  <key>WatchPaths</key><array><string>/Library/Preferences/SystemConfiguration</string></array>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+</dict>
+</plist>
+EOF
+  launchctl bootout "gui/$UID/$LABEL" 2>/dev/null
+  # bootout is asynchronous; wait until the old agent is gone
+  local i; for i in {1..20}; do launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || break; sleep 0.25; done
+  launchctl bootstrap "gui/$UID" "$PLIST" && print "installed: $BIN (agent $LABEL)"
+  [[ :$PATH: == *:${BIN:h}:* ]] || print "note: add ${BIN:h} to your PATH"
+}
+
+cmd_uninstall() {
+  launchctl bootout "gui/$UID/$LABEL" 2>/dev/null
+  rm -f "$PLIST" && print "agent removed (config kept in $CONF_DIR)"
+}
+
+cmd_pause()  { mkdir -p "$CONF_DIR"; : >"$PAUSE"; print "paused — eject shares in Finder; they won't come back until 'velcro resume'"; }
+cmd_resume() { rm -f "$PAUSE"; print "resumed"; cmd_run; }
+cmd_logs()   { [[ -f $LOG ]] && tail -n ${1:-30} "$LOG" || print "no log yet"; }
+
+cmd_help() {
+  cat <<EOF
+velcro $VERSION — keep network shares stuck to your Mac
+
+  velcro add smb://user@host/share [fallback-host ...]
+  velcro rm <url|share>      stop tracking a share
+  velcro status              what's mounted, reachable, paused
+  velcro pause | resume      stop/start remounting (eject stays ejected)
+  velcro install | uninstall background agent (every ${INTERVAL}s + network change)
+  velcro run                 one pass now (what the agent calls)
+  velcro logs [n]
+
+config: $CONF
+EOF
+}
+
+case ${1:-help} in
+  run)         cmd_run ;;
+  status|st)   cmd_status ;;
+  add)         shift; cmd_add "$@" ;;
+  rm|remove)   shift; cmd_rm "$@" ;;
+  install)     cmd_install ;;
+  uninstall)   cmd_uninstall ;;
+  pause)       cmd_pause ;;
+  resume)      cmd_resume ;;
+  logs|log)    shift; cmd_logs "$@" ;;
+  version|-v|--version) print "velcro $VERSION" ;;
+  help|-h|--help) cmd_help ;;
+  *) print -u2 "unknown command: $1"; cmd_help; exit 2 ;;
+esac
