@@ -11,6 +11,7 @@ macOS drops SMB mounts whenever Wi‑Fi blips, the lid closes, or you change net
 - Never touches a share just to check it, so a dead network can't freeze your terminal
 - Fallback hosts: try the LAN address first, then Tailscale (or any other route)
 - `pause` when you want an ejected share to stay ejected
+- Optional menu bar icon via SwiftBar
 - One zsh script, no dependencies. Uses the password macOS already saved in your Keychain
 
 ## Install
@@ -42,6 +43,18 @@ velcro uninstall
 ```
 
 The first mount may show the usual macOS login prompt — tick **Remember this password in my keychain** and you won't see it again.
+
+## Menu bar
+
+With [SwiftBar](https://github.com/swiftbar/SwiftBar) installed (`brew install --cask swiftbar`), `velcro install` also adds a menu bar icon:
+
+| Icon | Meaning |
+|---|---|
+| <img src="assets/logo/menubar/connected.svg" width="18"> | every share attached |
+| <img src="assets/logo/menubar/detached.svg" width="18"> | something dropped — velcro is reattaching |
+| <img src="assets/logo/menubar/paused.svg" width="18"> | paused |
+
+The menu lists each share (open in Finder, reconnect, remove), plus pause/resume, reconnect now, add share, and the log. Icons are rendered from `assets/logo` by `scripts/build-icons`.
 
 ## How it works
 

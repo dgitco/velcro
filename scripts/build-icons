@@ -1,0 +1,17 @@
+#!/bin/zsh
+# Render the SVG logo files into the PNGs the menu bar uses. Needs rsvg-convert (brew install librsvg).
+# PNGs are drawn at 2x and tagged 144 dpi so macOS shows them at 1x point size.
+set -e
+cd "${0:A:h}/../assets/logo"
+out=png
+render() { # svg px name
+  rsvg-convert -w $2 -h $2 "$1" -o "$out/$3.png"
+  sips -s dpiWidth 144 -s dpiHeight 144 "$out/$3.png" >/dev/null
+}
+for s in connected detached paused; do
+  render menubar/$s.svg 36 menubar-$s     # 18pt menu bar icon
+  render menubar/$s.svg 32 item-$s        # 16pt menu row icon
+done
+render velcro-icon.svg 36 app-18
+render velcro-icon.svg 256 app-128
+print "icons → assets/logo/png"

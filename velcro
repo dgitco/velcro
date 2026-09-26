@@ -4,7 +4,7 @@
 emulate -L zsh
 setopt pipe_fail
 
-VERSION=0.1.0
+VERSION=0.2.0
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -13,7 +13,11 @@ PAUSE=$CONF_DIR/paused
 LOG=$HOME/Library/Logs/velcro.log
 PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
 BIN=$HOME/.local/bin/velcro
+ICONS=$HOME/.local/share/velcro/icons
 INTERVAL=60
+SWIFTBAR_PLUGIN=velcro.10s.sh
+# Field separator for scan output. Not a tab: read collapses repeated whitespace, losing empty fields.
+SEP=$'\x1f'
 
 log() { print -r -- "$(date '+%F %T') $*" >>"$LOG"; }
 
@@ -35,18 +39,43 @@ parse() {
   [[ -n $host && -n $share && $share != "$url" ]]
 }
 
-# Is <share> mounted from any of <hosts...>? Reads `mount` only; never touches the share.
-is_mounted() {
-  local share=$1; shift
-  local h mounts=$(mount -t smbfs)
+# Where is <share> mounted from any of <hosts...>? Prints the mount point.
+# Reads `mount` output only; never touches the share, so a dead network can't hang it.
+mountpoint_of() {
+  local share=$1 h line; shift
   for h in "$@"; do
-    print -r -- "$mounts" | grep -qiF -- "@$h/$share on " && return 0
-    print -r -- "$mounts" | grep -qiF -- "//$h/$share on " && return 0
+    line=$(mount -t smbfs | grep -iF -e "@$h/$share on " -e "//$h/$share on " | head -1)
+    if [[ -n $line ]]; then
+      line=${line#* on }
+      print -r -- "${line% \(smbfs*}"
+      return 0
+    fi
   done
   return 1
 }
 
 reachable() { nc -z -G 2 "$1" 445 </dev/null >/dev/null 2>&1; }
+
+# One line per share: state, share name, mount point, first host, config line (SEP-separated).
+# state: mounted | reachable | offline. With "fast", unmounted shares are "offline" without probing.
+scan() {
+  local fast=$1 line state mp h
+  local -a words hosts
+  entries | while IFS= read -r line; do
+    words=(${(z)line})
+    parse "${words[1]}" || continue
+    hosts=($host ${words[2,-1]})
+    if mp=$(mountpoint_of "$share" $hosts); then
+      state=mounted
+    else
+      state=offline mp=
+      if [[ -z $fast ]]; then
+        for h in $hosts; do reachable "$h" && { state=reachable; break; }; done
+      fi
+    fi
+    print -r -- "$state$SEP${share//\%20/ }$SEP$mp$SEP$host$SEP$line"
+  done
+}
 
 mount_share() {
   local url=$1
@@ -61,25 +90,27 @@ cmd_run() {
   pgrep -f "osascript.*mount volume" >/dev/null && return 0
   [[ -f $LOG && $(stat -f %z "$LOG") -gt 1048576 ]] && mv -f "$LOG" "$LOG.1"
 
-  local line url h
+  local line h tried=
   local -a words hosts
   entries | while IFS= read -r line; do
-    words=(${(z)line}); url=${words[1]}
-    parse "$url" || { log "bad entry: $line"; continue; }
+    words=(${(z)line})
+    parse "${words[1]}" || { log "bad entry: $line"; continue; }
     hosts=($host ${words[2,-1]})
-    is_mounted "$share" $hosts && continue
+    mountpoint_of "$share" $hosts >/dev/null && continue
     for h in $hosts; do
       reachable "$h" || continue
       log "mount //$h/$share"
       mount_share "smb://${user:+$user@}$h/$share"
+      tried=1
       break
     done
   done
+  [[ -n $tried ]] && refresh_menubar
+  return 0
 }
 
 cmd_status() {
-  local line url h state
-  local -a words hosts
+  local st name mp h line state
   if launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; then
     print "agent:  running (every ${INTERVAL}s + on network change)"
   else
@@ -87,15 +118,12 @@ cmd_status() {
   fi
   [[ -e $PAUSE ]] && print "state:  paused  →  velcro resume" || print "state:  active"
   print
-  entries | while IFS= read -r line; do
-    words=(${(z)line}); url=${words[1]}
-    parse "$url" || continue
-    hosts=($host ${words[2,-1]})
-    if is_mounted "$share" $hosts; then state="● mounted"
-    else
-      state="○ offline"
-      for h in $hosts; do reachable "$h" && { state="◐ reachable, not mounted"; break; }; done
-    fi
+  scan | while IFS=$SEP read -r st name mp h line; do
+    case $st in
+      mounted)   state="● mounted" ;;
+      reachable) state="◐ reachable, not mounted" ;;
+      *)         state="○ offline" ;;
+    esac
     printf '%-26s %s\n' "$state" "$line"
   done
   [[ -s $CONF ]] || print "no shares yet  →  velcro add smb://user@host/share"
@@ -110,6 +138,7 @@ cmd_add() {
   print -r -- "$url${2:+ ${@[2,-1]}}" >>"$CONF"
   print "added: $url${2:+ (fallback: ${@[2,-1]})}"
   cmd_run
+  refresh_menubar
 }
 
 cmd_rm() {
@@ -117,13 +146,14 @@ cmd_rm() {
   local pat=${1// /%20} tmp=$(mktemp)
   grep -vF -- "$pat" "$CONF" >"$tmp"
   if cmp -s "$tmp" "$CONF"; then rm -f "$tmp"; print -u2 "no match: $1"; return 1; fi
-  mv "$tmp" "$CONF"; print "removed: $1  (still mounted? eject it in Finder)"
+  mv "$tmp" "$CONF"
+  refresh_menubar
+  print "removed: $1  (still mounted? eject it in Finder)"
 }
 
 cmd_install() {
   mkdir -p "${BIN:h}" "${PLIST:h}" "${LOG:h}" "$CONF_DIR"
-  local self=$SELF
-  [[ $self == "${BIN:A}" ]] || { cp -f "$self" "$BIN"; chmod +x "$BIN"; }
+  [[ $SELF == "${BIN:A}" ]] || { cp -f "$SELF" "$BIN"; chmod +x "$BIN"; }
   cat >"$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -144,16 +174,120 @@ EOF
   local i; for i in {1..20}; do launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || break; sleep 0.25; done
   launchctl bootstrap "gui/$UID" "$PLIST" && print "installed: $BIN (agent $LABEL)"
   [[ :$PATH: == *:${BIN:h}:* ]] || print "note: add ${BIN:h} to your PATH"
+  install_menubar
 }
 
 cmd_uninstall() {
   launchctl bootout "gui/$UID/$LABEL" 2>/dev/null
-  rm -f "$PLIST" && print "agent removed (config kept in $CONF_DIR)"
+  rm -f "$PLIST" "$(swiftbar_dir)/$SWIFTBAR_PLUGIN"
+  refresh_menubar
+  print "agent and menu bar removed (config kept in $CONF_DIR)"
 }
 
-cmd_pause()  { mkdir -p "$CONF_DIR"; : >"$PAUSE"; print "paused — eject shares in Finder; they won't come back until 'velcro resume'"; }
-cmd_resume() { rm -f "$PAUSE"; print "resumed"; cmd_run; }
+cmd_pause() {
+  mkdir -p "$CONF_DIR"; : >"$PAUSE"
+  refresh_menubar
+  print "paused — eject shares in Finder; they won't come back until 'velcro resume'"
+}
+cmd_resume() { rm -f "$PAUSE"; print "resumed"; cmd_run; refresh_menubar; }
 cmd_logs()   { [[ -f $LOG ]] && tail -n ${1:-30} "$LOG" || print "no log yet"; }
+
+# --- menu bar (SwiftBar) ---------------------------------------------------
+
+# SwiftBar's plugin folder, or its default if SwiftBar has never been configured.
+swiftbar_dir() {
+  local d=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null)
+  print -r -- "${d:-$HOME/Library/Application Support/SwiftBar/Plugins}"
+}
+
+refresh_menubar() {
+  [[ -e "$(swiftbar_dir)/$SWIFTBAR_PLUGIN" ]] && pgrep -xq SwiftBar &&
+    open -g "swiftbar://refreshplugin?name=velcro" 2>/dev/null
+  return 0
+}
+
+install_menubar() {
+  local src=${SELF:h}/assets/logo/png
+  if [[ -d $src ]]; then mkdir -p "$ICONS"; cp -f "$src"/*.png "$ICONS"/; fi
+  if [[ ! -d /Applications/SwiftBar.app ]]; then
+    print "menu bar: skipped — brew install --cask swiftbar, then velcro install"
+    return 0
+  fi
+  local dir=$(swiftbar_dir)
+  defaults read com.ameba.SwiftBar PluginDirectory >/dev/null 2>&1 ||
+    defaults write com.ameba.SwiftBar PluginDirectory "$dir"
+  mkdir -p "$dir"
+  cat >"$dir/$SWIFTBAR_PLUGIN" <<EOF
+#!/bin/zsh
+# <xbar.title>velcro</xbar.title>
+# <xbar.desc>Keep network shares stuck to your Mac</xbar.desc>
+# <swiftbar.hideAbout>true</swiftbar.hideAbout>
+# <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
+# <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
+# <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
+# <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
+exec "$BIN" swiftbar
+EOF
+  chmod +x "$dir/$SWIFTBAR_PLUGIN"
+  if pgrep -xq SwiftBar; then refresh_menubar; else open -g -a SwiftBar; fi
+  print "menu bar: $dir/$SWIFTBAR_PLUGIN"
+}
+
+# " <param>=<base64 png>" for one of velcro's icons, or nothing if it's missing.
+icon() { [[ -r $ICONS/$1.png ]] && print -rn -- " $2=$(base64 -i "$ICONS/$1.png")"; }
+
+# SwiftBar menu: plain text and velcro's own icons only.
+cmd_swiftbar() {
+  local -a rows words
+  local row st name mp h line url paused= up=0 total bar
+  [[ -e $PAUSE ]] && paused=1
+  rows=("${(@f)$(scan fast)}")
+  [[ -z ${rows[1]} ]] && rows=()
+  total=${#rows}
+  for row in $rows; do [[ $row == mounted$SEP* ]] && (( up++ )); done
+
+  if [[ -n $paused ]]; then bar=paused
+  elif (( total == 0 || up < total )); then bar=detached
+  else bar=connected; fi
+
+  print -r -- "|$(icon menubar-$bar templateImage)"
+  print -- "---"
+  print -r -- "velcro |$(icon app-18 image)"
+  if [[ -n $paused ]]; then print -- "Paused | size=12 color=#8a8a8a"
+  elif (( total == 0 )); then print -- "No shares yet | size=12 color=#8a8a8a"
+  else print -- "$up of $total attached | size=12 color=#8a8a8a"; fi
+  print -- "---"
+  for row in $rows; do
+    IFS=$SEP read -r st name mp h line <<<"$row"
+    words=(${(z)line}); url=${words[1]}
+    if [[ $st == mounted ]]; then print -r -- "$name |$(icon item-connected templateImage)"
+    elif [[ -n $paused ]]; then print -r -- "$name |$(icon item-paused templateImage)"
+    else print -r -- "$name |$(icon item-detached templateImage)"; fi
+    print -r -- "--$h | size=11 color=#8a8a8a"
+    if [[ $st == mounted ]]; then
+      print -r -- "--Open in Finder | bash=/usr/bin/open param1=\"$mp\" terminal=false"
+    else
+      print -r -- "--Reconnect | bash=\"$BIN\" param1=run terminal=false refresh=true"
+    fi
+    print -r -- "--Remove from velcro | bash=\"$BIN\" param1=rm param2=\"$url\" terminal=false refresh=true"
+  done
+  (( total )) && print -- "---"
+  if [[ -n $paused ]]; then
+    print -r -- "Resume | bash=\"$BIN\" param1=resume terminal=false refresh=true"
+  else
+    print -r -- "Pause | bash=\"$BIN\" param1=pause terminal=false refresh=true"
+    print -r -- "Reconnect now | bash=\"$BIN\" param1=run terminal=false refresh=true"
+  fi
+  print -r -- "Add share… | bash=\"$BIN\" param1=add-prompt terminal=false refresh=true"
+  print -r -- "Open log | bash=/usr/bin/open param1=\"$LOG\" terminal=false"
+}
+
+# "Add share…" in the menu: ask for the address, then add it.
+cmd_add_prompt() {
+  local url
+  url=$(osascript -e 'text returned of (display dialog "SMB address of the share" default answer "smb://user@host/share" with title "velcro" buttons {"Cancel", "Add"} default button "Add")' 2>/dev/null) || return 0
+  [[ -n $url ]] && cmd_add ${(z)url} >>"$LOG" 2>&1
+}
 
 cmd_help() {
   cat <<EOF
@@ -164,6 +298,7 @@ velcro $VERSION — keep network shares stuck to your Mac
   velcro status              what's mounted, reachable, paused
   velcro pause | resume      stop/start remounting (eject stays ejected)
   velcro install | uninstall background agent (every ${INTERVAL}s + network change)
+                             and menu bar icon (needs SwiftBar)
   velcro run                 one pass now (what the agent calls)
   velcro logs [n]
 
@@ -175,12 +310,14 @@ case ${1:-help} in
   run)         cmd_run ;;
   status|st)   cmd_status ;;
   add)         shift; cmd_add "$@" ;;
+  add-prompt)  cmd_add_prompt ;;
   rm|remove)   shift; cmd_rm "$@" ;;
   install)     cmd_install ;;
   uninstall)   cmd_uninstall ;;
   pause)       cmd_pause ;;
   resume)      cmd_resume ;;
   logs|log)    shift; cmd_logs "$@" ;;
+  swiftbar)    cmd_swiftbar ;;
   version|-v|--version) print "velcro $VERSION" ;;
   help|-h|--help) cmd_help ;;
   *) print -u2 "unknown command: $1"; cmd_help; exit 2 ;;
