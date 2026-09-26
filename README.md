@@ -54,7 +54,7 @@ With [SwiftBar](https://github.com/swiftbar/SwiftBar) installed (`brew install -
 | <img src="assets/logo/menubar/detached.svg" width="18"> | something dropped — velcro is reattaching |
 | <img src="assets/logo/menubar/paused.svg" width="18"> | paused |
 
-The menu lists each share (open in Finder, reconnect, remove), plus pause/resume, reconnect now, add share, and the log. Icons are rendered from `assets/logo` by `scripts/build-icons`.
+The menu groups shared folders by server, each with open in Finder, reconnect, and remove,, plus pause/resume, reconnect now, add share, and the log. Icons are rendered from `assets/logo` by `scripts/build-icons`.
 
 ## How it works
 

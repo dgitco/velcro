@@ -118,13 +118,21 @@ cmd_status() {
   fi
   [[ -e $PAUSE ]] && print "state:  paused  →  velcro resume" || print "state:  active"
   print
-  scan | while IFS=$SEP read -r st name mp h line; do
-    case $st in
-      mounted)   state="● mounted" ;;
-      reachable) state="◐ reachable, not mounted" ;;
-      *)         state="○ offline" ;;
-    esac
-    printf '%-26s %s\n' "$state" "$line"
+  # Grouped by server: each line in the config is one shared folder on that server.
+  local -a rows; local row srv
+  rows=("${(@f)$(scan)}"); [[ -z ${rows[1]} ]] && rows=()
+  for srv in ${(u)${rows[@]#*$SEP*$SEP*$SEP}%%$SEP*}; do
+    print -r -- "$srv"
+    for row in $rows; do
+      IFS=$SEP read -r st name mp h line <<<"$row"
+      [[ $h == "$srv" ]] || continue
+      case $st in
+        mounted)   state="● mounted" ;;
+        reachable) state="◐ reachable, not mounted" ;;
+        *)         state="○ offline" ;;
+      esac
+      printf '  %-26s %-22s %s\n' "$state" "$name" "$mp"
+    done
   done
   [[ -s $CONF ]] || print "no shares yet  →  velcro add smb://user@host/share"
 }
@@ -256,20 +264,31 @@ cmd_swiftbar() {
   if [[ -n $paused ]]; then print -- "Paused | size=12 color=#8a8a8a"
   elif (( total == 0 )); then print -- "No shares yet | size=12 color=#8a8a8a"
   else print -- "$up of $total attached | size=12 color=#8a8a8a"; fi
-  print -- "---"
-  for row in $rows; do
-    IFS=$SEP read -r st name mp h line <<<"$row"
-    words=(${(z)line}); url=${words[1]}
-    if [[ $st == mounted ]]; then print -r -- "$name |$(icon item-connected templateImage)"
-    elif [[ -n $paused ]]; then print -r -- "$name |$(icon item-paused templateImage)"
-    else print -r -- "$name |$(icon item-detached templateImage)"; fi
-    print -r -- "--$h | size=11 color=#8a8a8a"
-    if [[ $st == mounted ]]; then
-      print -r -- "--Open in Finder | bash=/usr/bin/open param1=\"$mp\" terminal=false"
-    else
-      print -r -- "--Reconnect | bash=\"$BIN\" param1=run terminal=false refresh=true"
-    fi
-    print -r -- "--Remove from velcro | bash=\"$BIN\" param1=rm param2=\"$url\" terminal=false refresh=true"
+  # One section per server, its shared folders underneath.
+  local srv n m
+  for srv in ${(u)${rows[@]#*$SEP*$SEP*$SEP}%%$SEP*}; do
+    n=0 m=0
+    for row in $rows; do
+      IFS=$SEP read -r st name mp h line <<<"$row"
+      [[ $h == "$srv" ]] || continue
+      (( n++ )); [[ $st == mounted ]] && (( m++ ))
+    done
+    print -- "---"
+    print -r -- "$srv   $m/$n | size=12 color=#8a8a8a"
+    for row in $rows; do
+      IFS=$SEP read -r st name mp h line <<<"$row"
+      [[ $h == "$srv" ]] || continue
+      words=(${(z)line}); url=${words[1]}
+      if [[ $st == mounted ]]; then print -r -- "$name |$(icon item-connected templateImage)"
+      elif [[ -n $paused ]]; then print -r -- "$name |$(icon item-paused templateImage)"
+      else print -r -- "$name |$(icon item-detached templateImage)"; fi
+      if [[ $st == mounted ]]; then
+        print -r -- "--Open in Finder | bash=/usr/bin/open param1=\"$mp\" terminal=false"
+      else
+        print -r -- "--Reconnect | bash=\"$BIN\" param1=run terminal=false refresh=true"
+      fi
+      print -r -- "--Remove from velcro | bash=\"$BIN\" param1=rm param2=\"$url\" terminal=false refresh=true"
+    done
   done
   (( total )) && print -- "---"
   if [[ -n $paused ]]; then
