@@ -1,0 +1,92 @@
+#!/bin/sh
+# velcro installer.
+#
+#   curl -fsSL https://velcro.dgit.co/install | sh                      menu bar app + velcro command
+#   curl -fsSL https://velcro.dgit.co/install | sh -s -- --cli-only     just the command and its LaunchAgents
+#
+# The app isn't notarized (that needs a paid Apple Developer account). A browser download gets
+# macOS's "can't check it" dialog; a download with curl doesn't, so this installs it without one.
+# What stands in for the signature: the files come over HTTPS from velcro.dgit.co and have to
+# match the SHA-256 published in https://velcro.dgit.co/latest before anything is installed.
+#
+# Run it again to update. Remove everything with: velcro uninstall, then delete velcro.app.
+set -eu
+
+BASE=${VELCRO_BASE:-https://velcro.dgit.co}
+mode=app
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'velcro install: %s\n' "$*" >&2; exit 1; }
+
+for arg in "$@"; do
+  case $arg in
+    --cli-only) mode=cli ;;
+    --app) mode=app ;;
+    -h|--help) say "usage: curl -fsSL https://velcro.dgit.co/install | sh [-s -- --cli-only]"; exit 0 ;;
+    *) die "unknown option: $arg (use --cli-only or --app)" ;;
+  esac
+done
+
+[ "$(uname -s)" = Darwin ] || die "velcro is for macOS"
+major=$(sw_vers -productVersion | cut -d. -f1)
+[ "$major" -ge 13 ] || die "velcro needs macOS 13 or later (this is $(sw_vers -productVersion))"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# latest: key=value lines (version, zip, zip_sha256, cli_sha256), written by scripts/deploy-site.
+curl -fsSL "$BASE/latest" -o "$tmp/latest" || die "couldn't reach $BASE"
+field() { sed -n "s/^$1=//p" "$tmp/latest"; }
+version=$(field version)
+[ -n "$version" ] || die "$BASE/latest doesn't say which version to install"
+
+fetch() { # url, file, expected sha256
+  curl -fSL --progress-bar "$1" -o "$2" || die "download failed: $1"
+  got=$(shasum -a 256 "$2" | cut -d' ' -f1)
+  [ "$got" = "$3" ] || die "checksum mismatch for $1 (expected $3, got $got). Nothing was installed."
+}
+
+if [ "$mode" = cli ]; then
+  say "velcro $version: command only"
+  fetch "$BASE/velcro" "$tmp/velcro" "$(field cli_sha256)"
+  chmod +x "$tmp/velcro"
+  # Copies itself to ~/.local/bin/velcro and starts its LaunchAgents.
+  /bin/zsh "$tmp/velcro" install
+else
+  say "velcro $version: menu bar app and command"
+  fetch "$BASE/$(field zip)" "$tmp/velcro.zip" "$(field zip_sha256)"
+  ditto -x -k "$tmp/velcro.zip" "$tmp/unzipped"
+  [ -d "$tmp/unzipped/velcro.app" ] || die "the download doesn't contain velcro.app"
+
+  apps=${VELCRO_APPS:-/Applications}
+  if [ -z "${VELCRO_APPS:-}" ] && ! [ -w /Applications ]; then apps=$HOME/Applications; fi
+  mkdir -p "$apps"
+  app=$apps/velcro.app
+
+  # Replace a running copy: quit it first, and keep the old one until the new one is in place.
+  if pgrep -f "$app/Contents/MacOS/" >/dev/null 2>&1; then
+    osascript -e 'tell application id "io.github.dgitco.velcro.app" to quit' >/dev/null 2>&1 || true
+    i=0; while pgrep -f "$app/Contents/MacOS/" >/dev/null 2>&1 && [ $i -lt 20 ]; do sleep 0.25; i=$((i + 1)); done
+  fi
+  rm -rf "$app.new"
+  ditto "$tmp/unzipped/velcro.app" "$app.new"
+  rm -rf "$app"
+  mv "$app.new" "$app"
+  say "installed: $app"
+
+  # Link ~/.local/bin/velcro into the app, and retire the command-line agent and the 0.2 SwiftBar
+  # plugin: the app reconnects shares itself. It also adds itself to Login Items when it opens.
+  /bin/zsh "$app/Contents/Resources/velcro" install
+  open "$app"
+fi
+
+say ""
+say "Next:"
+say "  velcro add smb://me@nas.local/home      a share to keep mounted"
+say "  velcro status                           what's mounted"
+say "  velcro help                             everything else, including recorder import and send"
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) say ""; say "velcro is in ~/.local/bin, which isn't on your PATH yet:"
+     say "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc" ;;
+esac

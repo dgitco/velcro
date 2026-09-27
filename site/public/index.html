@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>velcro — keeps network shares mounted on your Mac</title>
+<meta name="description" content="velcro is a small menu bar app for macOS that reconnects your SMB and NFS shares after Wi‑Fi drops, sleep, and network changes.">
+<meta property="og:title" content="velcro">
+<meta property="og:description" content="Keeps your network shares mounted on your Mac.">
+<meta property="og:image" content="https://velcro.dgit.co/og.png">
+<meta property="og:url" content="https://velcro.dgit.co/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<script>try{var t=localStorage.getItem("dgit-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+<script type="module" src="/main.js"></script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <clipPath id="cl"><circle cx="26.2" cy="35.5" r="6"/></clipPath>
+    <clipPath id="cr"><circle cx="37.8" cy="35.5" r="6"/></clipPath>
+    <mask id="mr" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><path clip-path="url(#cl)" d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="#000" stroke-width="12"/></mask>
+    <mask id="mh" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><circle clip-path="url(#cr)" cx="32" cy="46" r="12" fill="none" stroke="#000" stroke-width="12"/></mask>
+    <symbol id="mark" viewBox="0 0 64 64">
+      <circle cx="32" cy="46" r="12" fill="none" stroke="currentColor" stroke-width="6" mask="url(#mr)"/>
+      <path d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" mask="url(#mh)"/>
+    </symbol>
+    <symbol id="mark-off" viewBox="0 0 64 64">
+      <g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"><path d="M40 2V18a8 8 0 0 1-16 0v-5"/><circle cx="32" cy="48" r="12"/></g>
+    </symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></g></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<header class="header">
+  <a class="brand" href="/"><svg><use href="#mark"/></svg>velcro</a>
+  <nav>
+    <a class="nav-pill" href="https://github.com/dgitco/velcro">GitHub</a>
+    <a class="btn btn-sm" href="#install">Install</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="stage" id="stage" aria-hidden="true">
+      <svg class="stage-fallback"><use href="#mark"/></svg>
+    </div>
+    <h1>Keeps your network shares mounted.</h1>
+    <p class="lede">velcro is a small menu bar app for macOS. When Wi‑Fi drops, your Mac sleeps, or you change networks, it quietly reconnects your SMB and NFS shares.</p>
+    <div class="actions">
+      <a class="btn" href="#install">Install</a>
+      <a class="btn btn-outline" href="https://github.com/dgitco/velcro">View on GitHub</a>
+    </div>
+    <p class="fine">macOS 13 or later · Apple silicon and Intel · Free and open source</p>
+  </section>
+
+  <section class="section">
+    <h2>In the menu bar</h2>
+    <p class="body">Shares are grouped by server. Open one in Finder, reconnect it, or remove it. Pause velcro when you want an ejected share to stay ejected.</p>
+    <figure class="desk">
+      <img class="only-light" src="/desk-light.png" width="960" height="520" alt="The velcro menu open in the macOS menu bar: three shares on nas.local attached, Time Machine on backup.local not attached">
+      <img class="only-dark" src="/desk-dark.png" width="960" height="520" alt="">
+    </figure>
+    <ul class="list states">
+      <li><svg class="glyph"><use href="#mark"/></svg><div><b>Attached</b><span>Every share is mounted.</span></div></li>
+      <li><svg class="glyph"><use href="#mark-off"/></svg><div><b>Detached</b><span>Something dropped. velcro is reconnecting.</span></div></li>
+      <li><svg class="glyph dim"><use href="#mark-off"/></svg><div><b>Paused</b><span>Ejected shares stay ejected.</span></div></li>
+    </ul>
+  </section>
+
+  <section class="section">
+    <h2>How it works</h2>
+    <ul class="list">
+      <li><div><b>Reconnects on its own</b><span>When the network changes, when your Mac wakes, and every minute in between.</span></div></li>
+      <li><div><b>Never hangs your Mac</b><span>It reads the mount table instead of touching a share, so a dead server can't freeze Finder or a terminal.</span></div></li>
+      <li><div><b>Fallback hosts</b><span>Try the LAN address first, then a Tailscale name, or any other route.</span></div></li>
+      <li><div><b>No dialogs</b><span>It uses the password already in your keychain and writes problems to a log.</span></div></li>
+      <li><div><b>SMB and NFS</b><span>SMB is the better fit on a Mac. NFS works for servers that only speak it.</span></div></li>
+    </ul>
+  </section>
+
+  <section class="section">
+    <h2>Also in the menu</h2>
+    <ul class="list">
+      <li><div><b>Voice recorder import</b><span>Plug in a USB recorder and velcro copies its recordings to a folder on your NAS, reads each copy back and compares its size and SHA-256, then clears the recorder and ejects it. If any file doesn't match, nothing is deleted. When the NAS is away, recordings wait on your Mac and move over once it's back.</span></div></li>
+      <li><div><b>Send to your server</b><span>Pick a recent screenshot or file and velcro saves it in your NAS inbox, then copies the path your server sees, ready to paste into a terminal over SSH. The clipboard only changes when you pick something.</span></div></li>
+    </ul>
+  </section>
+
+  <section class="section">
+    <h2>Command line</h2>
+    <p class="body">Everything the app does is a <code>velcro</code> command, sharing the same settings.</p>
+    <div class="copy-field">
+      <pre>velcro add smb://me@nas.local/home
+velcro add smb://me@192.168.1.10/photos nas.tail1234.ts.net
+velcro status
+velcro pause
+velcro import
+velcro send screenshot.png</pre>
+      <button class="btn-icon" type="button" data-copy aria-label="Copy" title="Copy"><svg><use href="#i-copy"/></svg></button>
+    </div>
+  </section>
+
+  <section class="section" id="install">
+    <h2>Install</h2>
+    <p class="body"><b>Let your agent do it.</b> Paste this into Claude Code, Codex, or Cursor. It installs velcro, finds the shares you already have mounted, and asks before adding anything.</p>
+    <div class="copy-field">
+      <pre>Set up velcro on this Mac (https://velcro.dgit.co). It keeps SMB and NFS shares mounted, and can also import a USB voice recorder and send files to a NAS inbox.
+
+1. Install it: curl -fsSL https://velcro.dgit.co/install | sh
+   If I only want the command line: curl -fsSL https://velcro.dgit.co/install | sh -s -- --cli-only
+   velcro goes in ~/.local/bin; use the full path if that isn't on PATH yet.
+2. List the shares mounted right now (mount -t smbfs; mount -t nfs) and ask which ones velcro should keep mounted. Add each with: velcro add smb://user@host/share  (spaces as %20). If I reach that server another way too, like a Tailscale name, put it after the address as a fallback host.
+3. Ask whether I want either of these, and set up only what I say yes to:
+   - Voice recorder: I plug it in, you run velcro recorder add, then velcro set import.dest &lt;a folder on one of the shares&gt;
+   - Send to NAS: velcro set send.inbox &lt;a folder on a share&gt;, and velcro set map "&lt;that share's path on this Mac&gt; -&gt; &lt;its path on my server&gt;"
+4. Finish with velcro status and tell me what's set up.
+
+Only change things with velcro commands; velcro help lists them. If macOS asks for a share's password, tell me to tick "Remember this password in my keychain".</pre>
+      <button class="btn-icon" type="button" data-copy aria-label="Copy" title="Copy"><svg><use href="#i-copy"/></svg></button>
+    </div>
+
+    <p class="body sub"><b>Or run it yourself.</b> The menu bar app and the <code>velcro</code> command:</p>
+    <div class="copy-field">
+      <pre>curl -fsSL https://velcro.dgit.co/install | sh</pre>
+      <button class="btn-icon" type="button" data-copy aria-label="Copy" title="Copy"><svg><use href="#i-copy"/></svg></button>
+    </div>
+    <p class="note">Just the command, no app: add <code>-s -- --cli-only</code> after <code>sh</code>. Every download is checked against its published SHA-256 before anything is installed. <a href="/install">Read the script</a>.</p>
+
+    <p class="body sub"><b>Or download it.</b></p>
+    <ol class="list steps">
+      <li><span class="n">1</span><div><b>Download</b><span>Unzip it and move velcro to Applications.</span></div></li>
+      <li><span class="n">2</span><div><b>Open it</b><span>velcro isn't notarized, so macOS says it can't check it. Click Done, then open System Settings › Privacy &amp; Security and click Open Anyway. You only do this once.</span></div></li>
+      <li><span class="n">3</span><div><b>Add a share</b><span>Choose Add Share… in the menu and enter an address like <code>smb://me@nas.local/home</code>. velcro starts at login from then on.</span></div></li>
+    </ol>
+    <a class="btn btn-outline" href="/download"><svg><use href="#i-download"/></svg>Download for macOS</a>
+  </section>
+
+  <section class="section" id="faq">
+    <h2>Questions</h2>
+    <div class="list faq">
+      <details>
+        <summary>Why does macOS say it can't check velcro?</summary>
+        <p>velcro is free and isn't notarized, which takes a paid Apple Developer membership. macOS only checks apps a browser downloaded, so installing with the <code>curl</code> command skips the dialog; the installer checks the download's SHA-256 instead. If you downloaded the zip, open velcro once, click Done, then click Open Anyway in System Settings › Privacy &amp; Security. Or run <code>xattr -dr com.apple.quarantine /Applications/velcro.app</code>.</p>
+      </details>
+      <details>
+        <summary>What will macOS ask me to allow?</summary>
+        <p>Notifications, to tell you when an import or a send is done, and Login Items, to start at login. The first time velcro imports or sends, macOS may ask to let it open files on a removable volume or a network volume. velcro doesn't need Full Disk Access, Accessibility, or Screen Recording.</p>
+      </details>
+      <details>
+        <summary>Does velcro see my passwords?</summary>
+        <p>No. Share passwords stay in your keychain; macOS uses them to mount and velcro never reads them. If there's no saved password, macOS shows its own login window once. velcro keeps no tokens or keys of its own.</p>
+      </details>
+      <details>
+        <summary>What does it do with my clipboard?</summary>
+        <p>It notices when you copy an image or a file and lists the last four in the menu. Copied images are kept in <code>~/Library/Application Support/velcro/clips</code> until they drop off the list or velcro quits, and anything a password manager marks as private is skipped. velcro only writes to the clipboard when you pick something to send, and never sends anything on its own.</p>
+      </details>
+      <details>
+        <summary>Where does it keep things?</summary>
+        <p>Shares and settings in <code>~/.config/velcro</code>, the log in <code>~/Library/Logs/velcro.log</code>, and recordings waiting for the NAS in <code>~/Library/Application Support/velcro/import-queue</code>.</p>
+      </details>
+      <details>
+        <summary>How do I uninstall it?</summary>
+        <p>Run <code>velcro uninstall</code>, then move velcro.app to the Trash. Delete <code>~/.config/velcro</code> too if you want your settings gone.</p>
+      </details>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="footer-links">
+    <span class="brand small"><svg><use href="#mark"/></svg>velcro</span>
+    <a href="https://github.com/dgitco/velcro">GitHub</a>
+    <span>MIT License</span>
+    <a href="https://dgit.co">dgit</a>
+  </div>
+  <div class="segmented" role="radiogroup" aria-label="Theme">
+    <button type="button" role="radio" data-theme-choice="system">System</button>
+    <button type="button" role="radio" data-theme-choice="light">Light</button>
+    <button type="button" role="radio" data-theme-choice="dark">Dark</button>
+  </div>
+</footer>
+</body>
+</html>

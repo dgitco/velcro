@@ -1,0 +1,29 @@
+#!/bin/zsh
+# Publish velcro.dgit.co: the landing page in site/, the installer, and the release scripts/build-app made.
+#
+#   scripts/deploy-site            stage site/public, then wrangler deploy
+#   scripts/deploy-site --stage    only stage (to try the installer against a local server)
+#
+# Uses the Cloudflare account that owns dgit.co (wrangler must be signed in to it).
+set -e
+root=${0:A:h:h}
+version=$(sed -n 's/^VERSION=//p' $root/velcro)
+zip=$root/build/velcro-$version.zip
+pub=$root/site/public
+[[ -f $zip ]] || { print -u2 "no $zip — run scripts/build-app first"; exit 1; }
+cmp -s $root/velcro $root/build/velcro.app/Contents/Resources/velcro ||
+  { print -u2 "build/velcro.app has an older velcro script — run scripts/build-app again"; exit 1; }
+
+sha() { shasum -a 256 $1 | cut -d' ' -f1; }
+rm -f $pub/velcro-*.zip(N)
+cp $zip $pub/
+# The command on its own, for: install | sh -s -- --cli-only
+cp $root/velcro $pub/velcro
+# What the installer reads to know what to fetch and which checksums to expect.
+print -l "version=$version" "zip=${zip:t}" "zip_sha256=$(sha $zip)" "cli_sha256=$(sha $root/velcro)" >$pub/latest
+print "/download /${zip:t} 302" >$pub/_redirects
+print "staged velcro $version in $pub"
+[[ $1 == --stage ]] && exit 0
+
+cd $root/site
+CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-a94e720e299d085a43f09d5ee6dddf74} wrangler deploy

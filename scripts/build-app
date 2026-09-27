@@ -1,0 +1,43 @@
+#!/bin/zsh
+# Build velcro.app into build/. Needs Xcode and xcodegen (brew install xcodegen).
+#
+#   scripts/build-app                          ad-hoc signed, fine for this Mac
+#   SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" scripts/build-app
+#                                              signed with the hardened runtime, ready to notarize
+#   NOTARY_PROFILE=velcro SIGN_IDENTITY=… scripts/build-app
+#                                              also notarize and staple; create the profile once with
+#                                              xcrun notarytool store-credentials velcro
+#
+# The version comes from VERSION= in the velcro script, so the app and the command always match.
+set -e
+root=${0:A:h:h}
+version=$(sed -n 's/^VERSION=//p' $root/velcro)
+out=$root/build
+app=$out/velcro.app
+zip=$out/velcro-$version.zip
+
+cd $root/app
+xcodegen generate --quiet
+xcodebuild -project velcro.xcodeproj -scheme velcro -configuration Release \
+  -derivedDataPath build/dd MARKETING_VERSION=$version \
+  ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO -quiet build  # Intel Macs still run macOS 13–26
+
+rm -rf $app $zip
+mkdir -p $out
+ditto build/dd/Build/Products/Release/velcro.app $app
+
+if [[ -n $SIGN_IDENTITY ]]; then
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" $app
+fi
+codesign --verify --strict $app
+
+ditto -c -k --keepParent $app $zip
+if [[ -n $NOTARY_PROFILE ]]; then
+  xcrun notarytool submit $zip --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple $app
+  rm $zip
+  ditto -c -k --keepParent $app $zip
+fi
+
+print "built $app"
+print "      $zip  (sha256 $(shasum -a 256 $zip | cut -d' ' -f1))"

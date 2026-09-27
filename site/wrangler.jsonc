@@ -1,0 +1,8 @@
+// velcro.dgit.co: static landing page and the app download.
+// Deploy: scripts/deploy-site (copies the release zip in, then wrangler deploy).
+{
+  "name": "velcro-site",
+  "compatibility_date": "2026-09-01",
+  "assets": { "directory": "./public" },
+  "routes": [{ "pattern": "velcro.dgit.co", "custom_domain": true }]
+}

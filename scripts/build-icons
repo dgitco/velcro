@@ -1,17 +1,76 @@
 #!/bin/zsh
-# Render the SVG logo files into the PNGs the menu bar uses. Needs rsvg-convert (brew install librsvg).
-# PNGs are drawn at 2x and tagged 144 dpi so macOS shows them at 1x point size.
+# Render the SVG logo files into PNGs: assets/logo/png for the README, and the asset catalog
+# and app icon velcro.app is built with. Needs rsvg-convert (brew install librsvg).
 set -e
-cd "${0:A:h}/../assets/logo"
-out=png
-render() { # svg px name
-  rsvg-convert -w $2 -h $2 "$1" -o "$out/$3.png"
-  sips -s dpiWidth 144 -s dpiHeight 144 "$out/$3.png" >/dev/null
+root=${0:A:h:h}
+logo=$root/assets/logo
+xcassets=$root/app/Sources/Assets.xcassets
+appicon=$root/app/Sources/AppIcon.icon
+
+# svg px out [dpi]: 144 dpi makes a 2x PNG show at its 1x point size.
+render() {
+  rsvg-convert -w $2 -h $2 "$1" -o "$3"
+  [[ -z $4 ]] || sips -s dpiWidth $4 -s dpiHeight $4 "$3" >/dev/null
 }
+
+cd $logo
 for s in connected detached paused; do
-  render menubar/$s.svg 36 menubar-$s     # 18pt menu bar icon
-  render menubar/$s.svg 32 item-$s        # 16pt menu row icon
+  render menubar/$s.svg 36 png/menubar-$s.png 144   # 18pt menu bar icon
+  render menubar/$s.svg 32 png/item-$s.png 144      # 16pt menu row icon
 done
-render velcro-icon.svg 36 app-18
-render velcro-icon.svg 256 app-128
-print "icons → assets/logo/png"
+render velcro-icon.svg 36 png/app-18.png 144
+render velcro-icon.svg 256 png/app-128.png 144
+
+# imageset name svg pt [template]
+imageset() {
+  local dir=$xcassets/$1.imageset props=
+  [[ -n $4 ]] && props=$',\n  "properties" : { "template-rendering-intent" : "template" }'
+  mkdir -p $dir
+  render $2 $3 $dir/$1.png
+  render $2 $(( $3 * 2 )) $dir/$1@2x.png
+  cat >$dir/Contents.json <<EOF
+{
+  "images" : [
+    { "filename" : "$1.png", "idiom" : "universal", "scale" : "1x" },
+    { "filename" : "$1@2x.png", "idiom" : "universal", "scale" : "2x" }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 }$props
+}
+EOF
+}
+
+mkdir -p $xcassets
+print '{ "info" : { "author" : "xcode", "version" : 1 } }' >$xcassets/Contents.json
+for s in connected detached paused; do
+  imageset Menubar${(C)s} menubar/$s.svg 18 template
+  imageset Item${(C)s} menubar/$s.svg 16 template
+done
+imageset AppMark velcro-icon.svg 16
+
+# App icon for Icon Composer / macOS 26+: ink gradient fill with the emerald mark as one layer,
+# at the same size the mark has in velcro-icon.svg (36 of 64). Xcode derives older sizes from it.
+mkdir -p $appicon/Assets
+render velcro-mark.svg 576 $appicon/Assets/mark.png
+cat >$appicon/icon.json <<EOF
+{
+  "fill" : {
+    "linear-gradient" : [
+      "srgb:0.12157,0.16471,0.14902,1.00000",
+      "srgb:0.04314,0.07843,0.06667,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        { "image-name" : "mark.png", "name" : "mark" }
+      ],
+      "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
+      "translucency" : { "enabled" : false, "value" : 0.5 }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [ "macOS" ]
+  }
+}
+EOF
+print "icons → assets/logo/png, app/Sources/Assets.xcassets, app/Sources/AppIcon.icon"

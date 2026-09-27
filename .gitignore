@@ -1,0 +1,7 @@
+build/
+app/build/
+app/velcro.xcodeproj/
+site/public/velcro-*.zip
+site/.wrangler/
+site/public/velcro
+site/public/latest

@@ -1,60 +1,86 @@
 #!/bin/zsh
 # velcro — keep network shares stuck to your Mac.
-# Remounts SMB shares after Wi-Fi drops, sleep, or network changes. No popups.
+# Remounts SMB and NFS shares after Wi-Fi drops, sleep, or network changes. No popups.
 emulate -L zsh
 setopt pipe_fail
+zmodload zsh/system
+zmodload zsh/zselect
 
-VERSION=0.2.0
+VERSION=0.4.0
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
 CONF=$CONF_DIR/mounts
 PAUSE=$CONF_DIR/paused
+LOCK=$CONF_DIR/.lock
 LOG=$HOME/Library/Logs/velcro.log
 PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
 BIN=$HOME/.local/bin/velcro
-ICONS=$HOME/.local/share/velcro/icons
 INTERVAL=60
-SWIFTBAR_PLUGIN=velcro.10s.sh
+APP_EXEC=velcro.app/Contents/MacOS/
 # Field separator for scan output. Not a tab: read collapses repeated whitespace, losing empty fields.
 SEP=$'\x1f'
+# Import and send (see "velcro help"). Personal paths live in $SETTINGS, never in this script.
+SETTINGS=$CONF_DIR/settings
+SUPPORT=$HOME/Library/Application\ Support/velcro
+QUEUE=$SUPPORT/import-queue
+IMPORT_STATUS=$SUPPORT/import.status
+IMPORT_LOCK=$CONF_DIR/.import.lock
+IMPORT_AGAIN=$CONF_DIR/.import.again
+IMPORT_LABEL=$LABEL.import
+IMPORT_PLIST=$HOME/Library/LaunchAgents/$IMPORT_LABEL.plist
+MANIFEST=.velcro-import.jsonl
+CLIPS=$SUPPORT/clips
 
 log() { print -r -- "$(date '+%F %T') $*" >>"$LOG"; }
 
-# Config lines: <smb url> [fallback host ...]
+# Config lines: <smb or nfs url> [fallback host ...]
 # e.g.  smb://me@nas.tailnet.ts.net/home
 #       smb://me@192.168.1.10/media nas.tailnet.ts.net
+#       nfs://nas.local/volume1/photos
 entries() {
   [[ -r $CONF ]] || return 0
   grep -vE '^[[:space:]]*(#|$)' "$CONF"
 }
 
-# Split "smb://user@host/share" into globals: user host share (share stays URL-encoded).
+# Split "smb://user@host/share" or "nfs://host/export/path" into globals:
+# proto user host share (URL-encoded, as in the config) name (what Finder shows).
 parse() {
-  local url=${1#smb://}
-  user= host= share=
+  proto=${1%%://*} user= host= share= name=
+  [[ $proto == smb || $proto == nfs ]] || return 1
+  local url=${1#*://}
   if [[ $url == *@* ]]; then user=${url%%@*}; url=${url#*@}; fi
   host=${url%%/*}
   share=${url#*/}
-  [[ -n $host && -n $share && $share != "$url" ]]
+  [[ -n $host && -n $share && $share != "$url" ]] || return 1
+  if [[ $proto == nfs ]]; then name=${share:t}; else name=$share; fi
+  name=${name//\%20/ }
 }
+
+fstype() { [[ $1 == nfs ]] && print nfs || print smbfs; }
+port()   { [[ $1 == nfs ]] && print 2049 || print 445; }
 
 # Where is <share> mounted from any of <hosts...>? Prints the mount point.
 # Reads `mount` output only; never touches the share, so a dead network can't hang it.
+# smbfs lines look like "//me@host/My%20Share on /Volumes/My Share (smbfs, ...)",
+# nfs lines like "host:/export/My Share on /Volumes/My Share (nfs, ...)".
 mountpoint_of() {
-  local share=$1 h line; shift
+  local proto=$1 share=$2 fs=$(fstype $1) h line; shift 2
+  local -a pats
   for h in "$@"; do
-    line=$(mount -t smbfs | grep -iF -e "@$h/$share on " -e "//$h/$share on " | head -1)
+    if [[ $proto == nfs ]]; then pats=(-e "$h:/${share//\%20/ } on ")
+    else pats=(-e "@$h/$share on " -e "//$h/$share on "); fi
+    line=$(mount -t $fs | grep -iF $pats | head -1)
     if [[ -n $line ]]; then
       line=${line#* on }
-      print -r -- "${line% \(smbfs*}"
+      print -r -- "${line% \($fs,*}"
       return 0
     fi
   done
   return 1
 }
 
-reachable() { nc -z -G 2 "$1" 445 </dev/null >/dev/null 2>&1; }
+reachable() { nc -z -G 2 "$2" $(port $1) </dev/null >/dev/null 2>&1; }
 
 # One line per share: state, share name, mount point, first host, config line (SEP-separated).
 # state: mounted | reachable | offline. With "fast", unmounted shares are "offline" without probing.
@@ -65,15 +91,15 @@ scan() {
     words=(${(z)line})
     parse "${words[1]}" || continue
     hosts=($host ${words[2,-1]})
-    if mp=$(mountpoint_of "$share" $hosts); then
+    if mp=$(mountpoint_of $proto "$share" $hosts); then
       state=mounted
     else
       state=offline mp=
       if [[ -z $fast ]]; then
-        for h in $hosts; do reachable "$h" && { state=reachable; break; }; done
+        for h in $hosts; do reachable $proto "$h" && { state=reachable; break; }; done
       fi
     fi
-    print -r -- "$state$SEP${share//\%20/ }$SEP$mp$SEP$host$SEP$line"
+    print -r -- "$state$SEP$name$SEP$mp$SEP$host$SEP$line"
   done
 }
 
@@ -85,37 +111,38 @@ mount_share() {
 }
 
 cmd_run() {
-  [[ -e $PAUSE ]] && return 0
+  [[ -e $PAUSE || ! -r $CONF ]] && return 0
+  # One pass at a time: velcro.app, the agent, and a terminal can all ask at once.
+  local lockfd
+  : >>"$LOCK"
+  zsystem flock -t 0 -f lockfd "$LOCK" 2>/dev/null || return 0
   # Don't stack login prompts if one is already waiting.
   pgrep -f "osascript.*mount volume" >/dev/null && return 0
   [[ -f $LOG && $(stat -f %z "$LOG") -gt 1048576 ]] && mv -f "$LOG" "$LOG.1"
 
-  local line h tried=
+  local line h
   local -a words hosts
   entries | while IFS= read -r line; do
     words=(${(z)line})
     parse "${words[1]}" || { log "bad entry: $line"; continue; }
     hosts=($host ${words[2,-1]})
-    mountpoint_of "$share" $hosts >/dev/null && continue
+    mountpoint_of $proto "$share" $hosts >/dev/null && continue
     for h in $hosts; do
-      reachable "$h" || continue
-      log "mount //$h/$share"
-      mount_share "smb://${user:+$user@}$h/$share"
-      tried=1
+      reachable $proto "$h" || continue
+      log "mount $proto://$h/$share"
+      mount_share "$proto://${user:+$user@}$h/$share"
       break
     done
   done
-  [[ -n $tried ]] && refresh_menubar
   return 0
 }
 
 cmd_status() {
-  local st name mp h line state
-  if launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; then
-    print "agent:  running (every ${INTERVAL}s + on network change)"
-  else
-    print "agent:  not installed  →  velcro install"
-  fi
+  local st name mp h line state agent=
+  pgrep -qf "$APP_EXEC" && agent="velcro.app (on network change, wake, and a timer)"
+  launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 &&
+    agent+="${agent:+ + }LaunchAgent (every ${INTERVAL}s + on network change)"
+  print "agent:  ${agent:-not running  →  open velcro.app, or velcro install}"
   [[ -e $PAUSE ]] && print "state:  paused  →  velcro resume" || print "state:  active"
   print
   # Grouped by server: each line in the config is one shared folder on that server.
@@ -135,34 +162,79 @@ cmd_status() {
     done
   done
   [[ -s $CONF ]] || print "no shares yet  →  velcro add smb://user@host/share"
+
+  local dest=$(setting import.dest) inbox=$(setting send.inbox)
+  local -a regs=("${(@f)$(setting_all recorder)}") waiting=("$QUEUE"/[^.]*(N.))
+  [[ -z ${regs[1]} ]] && regs=()
+  if (( ${#regs} )) || [[ -n $dest ]]; then
+    print
+    print -rn -- "import  ${#regs} recorder(s) → ${dest:-(no folder yet: velcro set import.dest …)}"
+    if [[ -z $dest ]]; then print; elif on_mounted_volume "$dest"; then print "  ● attached"; else print "  ○ not attached"; fi
+    (( ${#waiting} )) && print -r -- "        ${#waiting} recording(s) waiting on this Mac for the NAS"
+  fi
+  if [[ -n $inbox ]]; then
+    (( ${#regs} )) || [[ -n $dest ]] || print
+    print -rn -- "send    $inbox → $(remote_path "$inbox")"
+    if on_mounted_volume "$inbox"; then print "  ● attached"; else print "  ○ not attached"; fi
+  fi
+  return 0
 }
 
 cmd_add() {
-  [[ -n $1 ]] || { print -u2 "usage: velcro add smb://user@host/share [fallback-host ...]"; return 2; }
-  local url=${1// /%20}
-  parse "$url" || { print -u2 "not an smb url: $1"; return 2; }
+  [[ -n $1 ]] || { print -u2 "usage: velcro add smb://user@host/share | nfs://host/path [fallback-host ...]"; return 2; }
+  local url=${1// /%20} line
+  parse "$url" || { print -u2 "not an smb:// or nfs:// url: $1"; return 2; }
   mkdir -p "$CONF_DIR"
-  if [[ -r $CONF ]] && grep -qF -- "$url" "$CONF"; then print "already added: $url"; return 0; fi
+  entries | while IFS= read -r line; do
+    [[ ${${(z)line}[1]} == "$url" ]] && { print "already added: $url"; return 0; }
+  done
   print -r -- "$url${2:+ ${@[2,-1]}}" >>"$CONF"
   print "added: $url${2:+ (fallback: ${@[2,-1]})}"
   cmd_run
-  refresh_menubar
 }
 
+# Drop the share with this exact url, or with this name if only one share has it.
 cmd_rm() {
   [[ -n $1 && -r $CONF ]] || { print -u2 "usage: velcro rm <url or share name>"; return 2; }
-  local pat=${1// /%20} tmp=$(mktemp)
-  grep -vF -- "$pat" "$CONF" >"$tmp"
-  if cmp -s "$tmp" "$CONF"; then rm -f "$tmp"; print -u2 "no match: $1"; return 1; fi
-  mv "$tmp" "$CONF"
-  refresh_menubar
-  print "removed: $1  (still mounted? eject it in Finder)"
+  local arg=${1// /%20} line
+  local -a words kept gone
+  while IFS= read -r line || [[ -n $line ]]; do
+    words=(${(z)line})
+    if [[ ! $line =~ '^[[:space:]]*(#|$)' ]] && parse "${words[1]}" &&
+       [[ ${words[1]} == "$arg" || $name == "$1" ]]; then
+      gone+=("${words[1]}")
+    else
+      kept+=("$line")
+    fi
+  done <"$CONF"
+  (( ${#gone} )) || { print -u2 "no match: $1"; return 1; }
+  gone=(${(u)gone})
+  if (( ${#gone} > 1 )); then
+    print -u2 "more than one share is called \"$1\"; use its url:"
+    print -rlu2 -- "  "${^gone}
+    return 1
+  fi
+  if (( ${#kept} )); then print -rl -- $kept >"$CONF.tmp"; else : >"$CONF.tmp"; fi
+  mv -f "$CONF.tmp" "$CONF"
+  print "removed: ${gone[1]}  (still mounted? eject it in Finder)"
 }
 
+# True when this copy of velcro lives inside velcro.app.
+in_app() { [[ $SELF == *.app/Contents/Resources/velcro ]]; }
+
 cmd_install() {
-  mkdir -p "${BIN:h}" "${PLIST:h}" "${LOG:h}" "$CONF_DIR"
-  [[ $SELF == "${BIN:A}" ]] || { cp -f "$SELF" "$BIN"; chmod +x "$BIN"; }
-  cat >"$PLIST" <<EOF
+  mkdir -p "${BIN:h}" "${LOG:h}" "$CONF_DIR"
+  remove_swiftbar
+  if in_app; then
+    # The app does the reconnecting, so the agent goes and the command points into the app.
+    stop_agent
+    ln -sfh "$SELF" "$BIN" && print "linked: $BIN → $SELF"
+    print "velcro.app reconnects your shares while it runs (it can start at login)"
+  else
+    # Replace, don't write through: $BIN may be a link into velcro.app.
+    [[ $SELF == "${BIN:A}" ]] || { rm -f "$BIN"; cp "$SELF" "$BIN"; chmod +x "$BIN"; }
+    mkdir -p "${PLIST:h}"
+    cat >"$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -177,135 +249,529 @@ cmd_install() {
 </dict>
 </plist>
 EOF
-  launchctl bootout "gui/$UID/$LABEL" 2>/dev/null
-  # bootout is asynchronous; wait until the old agent is gone
-  local i; for i in {1..20}; do launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || break; sleep 0.25; done
-  launchctl bootstrap "gui/$UID" "$PLIST" && print "installed: $BIN (agent $LABEL)"
+    launchctl bootout "gui/$UID/$LABEL" 2>/dev/null
+    # bootout is asynchronous; wait until the old agent is gone
+    local i; for i in {1..20}; do launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || break; sleep 0.25; done
+    launchctl bootstrap "gui/$UID" "$PLIST" && print "installed: $BIN (agent $LABEL)"
+    install_import_agent
+  fi
   [[ :$PATH: == *:${BIN:h}:* ]] || print "note: add ${BIN:h} to your PATH"
-  install_menubar
 }
 
 cmd_uninstall() {
+  stop_agent
+  remove_swiftbar
+  [[ -L $BIN ]] && rm -f "$BIN"
+  print "agent removed (config kept in $CONF_DIR)"
+}
+
+stop_agent() {
   launchctl bootout "gui/$UID/$LABEL" 2>/dev/null
-  rm -f "$PLIST" "$(swiftbar_dir)/$SWIFTBAR_PLUGIN"
-  refresh_menubar
-  print "agent and menu bar removed (config kept in $CONF_DIR)"
+  launchctl bootout "gui/$UID/$IMPORT_LABEL" 2>/dev/null
+  rm -f "$PLIST" "$IMPORT_PLIST"
+}
+
+# Without the app, a second agent runs "velcro import --auto" whenever any volume mounts:
+# a recorder plugged in, or the NAS coming back for recordings kept on this Mac.
+# Separate from the reconnect agent so a long import never holds up reconnecting.
+install_import_agent() {
+  cat >"$IMPORT_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$IMPORT_LABEL</string>
+  <key>ProgramArguments</key><array><string>$BIN</string><string>import</string><string>--auto</string></array>
+  <key>StartOnMount</key><true/>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+</dict>
+</plist>
+EOF
+  launchctl bootout "gui/$UID/$IMPORT_LABEL" 2>/dev/null
+  local i; for i in {1..20}; do launchctl print "gui/$UID/$IMPORT_LABEL" >/dev/null 2>&1 || break; sleep 0.25; done
+  launchctl bootstrap "gui/$UID" "$IMPORT_PLIST" && print "installed: agent $IMPORT_LABEL (import on mount)"
+}
+
+# velcro 0.2 drew its menu with a SwiftBar plugin; velcro.app replaces it.
+remove_swiftbar() {
+  local dir=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null)
+  local plugin=${dir:-$HOME/Library/Application Support/SwiftBar/Plugins}/velcro.10s.sh
+  rm -rf "$HOME/.local/share/velcro/icons"
+  rmdir "$HOME/.local/share/velcro" 2>/dev/null
+  [[ -e $plugin ]] || return 0
+  rm -f "$plugin"
+  pgrep -xq SwiftBar && open -g "swiftbar://refreshallplugins" 2>/dev/null
+  print "removed the old SwiftBar menu plugin"
 }
 
 cmd_pause() {
   mkdir -p "$CONF_DIR"; : >"$PAUSE"
-  refresh_menubar
   print "paused — eject shares in Finder; they won't come back until 'velcro resume'"
 }
-cmd_resume() { rm -f "$PAUSE"; print "resumed"; cmd_run; refresh_menubar; }
+cmd_resume() { rm -f "$PAUSE"; print "resumed"; cmd_run; }
 cmd_logs()   { [[ -f $LOG ]] && tail -n ${1:-30} "$LOG" || print "no log yet"; }
 
-# --- menu bar (SwiftBar) ---------------------------------------------------
+# For velcro.app: "paused" or "active", then one scan line per share.
+cmd_scan() { [[ -e $PAUSE ]] && print paused || print active; scan $1; }
 
-# SwiftBar's plugin folder, or its default if SwiftBar has never been configured.
-swiftbar_dir() {
-  local d=$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null)
-  print -r -- "${d:-$HOME/Library/Application Support/SwiftBar/Plugins}"
+# For velcro.app: the files it shares with this script.
+cmd_env() {
+  print -rl -- "VERSION=$VERSION" "CONF=$CONF" "PAUSE=$PAUSE" "LOG=$LOG" "BIN=$BIN" "SELF=$SELF" \
+    "SETTINGS=$SETTINGS" "QUEUE=$QUEUE" "IMPORT_STATUS=$IMPORT_STATUS"
 }
 
-refresh_menubar() {
-  [[ -e "$(swiftbar_dir)/$SWIFTBAR_PLUGIN" ]] && pgrep -xq SwiftBar &&
-    open -g "swiftbar://refreshplugin?name=velcro" 2>/dev/null
+# ---------------------------------------------------------------------------------------------
+# Settings: ~/.config/velcro/settings, one "key = value" per line. recorder and map may repeat.
+#   import.dest   = /Volumes/home/recordings        where recordings go (a folder on a share)
+#   import.ext    = wav mp3 m4a                     file types to take from a recorder
+#   import.delete = yes                             delete from the recorder once verified
+#   import.auto   = yes                             import as soon as a recorder is plugged in
+#   recorder      = uuid:<VolumeUUID> <label>       or name:<volume name>
+#   send.inbox    = /Volumes/home/inbox             where "velcro send" puts files
+#   send.keep     = 14                              days before the inbox is cleaned; 0 keeps all
+#   map           = /Volumes/home -> /mnt/nas/me    how another machine sees a local path
+
+KEYS=(import.dest import.ext import.delete import.auto recorder send.inbox send.keep map)
+typeset -A DEFAULTS=(
+  import.ext 'wav mp3 m4a aac flac wma ogg'
+  import.delete yes
+  import.auto yes
+  send.keep 14
+)
+
+# Every value of <key>, one per line, or its default when the file has none.
+setting_all() {
+  setopt local_options extended_glob
+  local key=$1 line k v found=
+  if [[ -r $SETTINGS ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ $line == [[:space:]]#(\#*|) || $line != *=* ]] && continue
+      k=${${line%%=*}//[[:space:]]/}
+      [[ $k == "$key" ]] || continue
+      v=${${line#*=}##[[:space:]]#}
+      print -r -- "${v%%[[:space:]]#}"
+      found=1
+    done <"$SETTINGS"
+  fi
+  [[ -n $found || -z ${DEFAULTS[$key]} ]] || print -r -- "${DEFAULTS[$key]}"
+}
+# The first value. (No "| head": with pipe_fail, a writer cut off early turns into a failure.)
+setting() { local -a v=("${(@f)$(setting_all "$1")}"); print -r -- "${v[1]}"; }
+is_on()   { [[ $(setting $1) == (yes|on|true|1) ]]; }
+
+# For velcro.app and scripts: every setting as key=value, repeated keys on their own lines.
+cmd_settings() {
+  local key v
+  for key in $KEYS; do
+    setting_all $key | while IFS= read -r v; do print -r -- "$key=$v"; done
+  done
+}
+
+# velcro set <key> [value ...]: replace every line of <key>; no value goes back to the default.
+cmd_set() {
+  local key=$1 v line; shift 2>/dev/null
+  (( ${KEYS[(Ie)$key]} )) || { print -u2 "unknown setting: $key (one of: $KEYS)"; return 2; }
+  for v in "$@"; do
+    case $key in
+      import.delete|import.auto) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
+      send.keep) [[ $v == <-> ]] || { print -u2 "send.keep is a number of days"; return 2; } ;;
+      map) [[ $v == /?*' -> '/* ]] || { print -u2 "map looks like: /Volumes/home -> /mnt/nas/me"; return 2; } ;;
+      recorder) [[ $v == (uuid|name):?* ]] || { print -u2 "recorder is uuid:<VolumeUUID> or name:<volume name>"; return 2; } ;;
+    esac
+  done
+  mkdir -p "$CONF_DIR"
+  local -a kept
+  if [[ -r $SETTINGS ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ $line == *=* && ${${line%%=*}//[[:space:]]/} == "$key" ]] || kept+=("$line")
+    done <"$SETTINGS"
+  else
+    kept=("# velcro settings: one \"key = value\" per line. See 'velcro help'.")
+  fi
+  for v in "$@"; do kept+=("$key = $v"); done
+  print -rl -- "${kept[@]}" >"$SETTINGS.tmp" && mv -f "$SETTINGS.tmp" "$SETTINGS"
+}
+
+# Tell the user. velcro.app turns "notify" lines into notifications; a terminal gets the text;
+# a background run (the LaunchAgent) posts a notification itself.
+notify() {
+  log "$*"
+  if [[ -n $VELCRO_APP ]]; then print -r -- "notify$SEP$*"
+  elif [[ -t 1 ]]; then print -r -- "$*"
+  else osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "velcro"' \
+         -e 'end run' "$*" </dev/null >/dev/null 2>&1
+  fi
+}
+
+# Mount points in `mount` output, one per line. Reading it never touches a share.
+mount_points() {
+  local line mp
+  mount | while IFS= read -r line; do
+    mp=${line#* on }
+    print -r -- "${mp% \(*}"
+  done
+}
+
+# Paths under /Volumes count only while their volume is mounted; otherwise they'd be a
+# leftover folder on this Mac, or hang on a share that just dropped. Other paths always count.
+on_mounted_volume() {
+  local p=${1%/} mp
+  [[ $p == /Volumes/?* ]] || return 0
+  # Loop over a list, not a pipe: returning mid-pipe breaks the writer, and pipe_fail reports that.
+  for mp in "${(@f)$(mount_points)}"; do
+    [[ $mp == /Volumes/?* && ($p == "$mp" || $p == "$mp"/*) ]] && return 0
+  done
+  return 1
+}
+
+# A folder ready to write into: on a mounted volume, created if needed.
+ready_dir() { [[ -n $1 ]] && on_mounted_volume "$1" && mkdir -p "$1" 2>/dev/null; }
+
+# How another machine sees <path>, by the longest matching "map" rule; unchanged without one.
+remote_path() {
+  local p=$1 m from to best= best_to=
+  setting_all map | while IFS= read -r m; do
+    from=${${m%% -> *}%/} to=${${m#* -> }%/}
+    if [[ ($p == "$from" || $p == "$from"/*) && ${#from} -gt ${#best} ]]; then
+      best=$from best_to=$to
+    fi
+  done
+  if [[ -n $best ]]; then print -r -- "$best_to${p#"$best"}"; else print -r -- "$p"; fi
+}
+
+# <name>, or <name>-2, -3 ... if <dir> already has one.
+free_name() {
+  local dir=$1 name=$2 base=${2%.*} ext=${2:e} n=1
+  [[ $name == .* || $base == "$name" ]] && { base=$name ext=; }
+  while [[ -e $dir/$name ]]; do (( n++ )); name=$base-$n${ext:+.$ext}; done
+  print -r -- "$name"
+}
+
+sha256() { /usr/bin/openssl dgst -sha256 -r <"$1" | cut -d' ' -f1; }
+size_of() { stat -f %z "$1" 2>/dev/null; }
+now_iso() { local t=$(date +%Y-%m-%dT%H:%M:%S%z); print -r -- "${t[1,-3]}:${t[-2,-1]}"; }
+json_str() {
+  local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/\\n}; s=${s//$'\t'/\\t}
+  print -rn -- "\"$s\""
+}
+
+# ---------------------------------------------------------------------------------------------
+# Import: copy recordings off a USB recorder, verify each copy, then clear and eject the recorder.
+
+# Local volumes Finder shows under /Volumes (USB drives, SD cards, disk images).
+local_volumes() {
+  local line mp
+  mount | while IFS= read -r line; do
+    [[ $line == /dev/* && $line != *nobrowse* ]] || continue
+    mp=${line#* on }; mp=${mp% \(*}
+    [[ $mp == /Volumes/?* ]] && print -r -- "$mp"
+  done
+}
+
+# "<VolumeUUID><SEP><VolumeName>" of a mounted volume.
+volume_id() {
+  local plist
+  plist=$(diskutil info -plist "$1" 2>/dev/null) || return 1
+  print -r -- "$(plutil -extract VolumeUUID raw -o - - <<<"$plist" 2>/dev/null)$SEP$(plutil -extract VolumeName raw -o - - <<<"$plist" 2>/dev/null)"
+}
+
+# Is the volume at <mount point> a registered recorder?
+is_recorder() {
+  local id r uuid name
+  id=$(volume_id "$1") || return 1
+  uuid=${id%%$SEP*} name=${id#*$SEP}
+  for r in "${(@f)$(setting_all recorder)}"; do
+    case $r in
+      uuid:*) r=${r#uuid:}; [[ -n $uuid && ${r%% *} == "$uuid" ]] && return 0 ;;
+      name:*) [[ ${r#name:} == "$name" ]] && return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Progress for the menu bar: phase, file i of n, file name, bytes done, bytes total.
+typeset -gi P_I P_N P_DONE P_TOTAL
+P_NAME=
+progress() {
+  print -r -- "$1$SEP$P_I$SEP$P_N$SEP$P_NAME$SEP$(( P_DONE + ${2:-0} ))$SEP$P_TOTAL" >"$IMPORT_STATUS"
+}
+
+# Copy <src> into <dir> without overwriting anything, read the copy back, and compare size and
+# SHA-256. <want> is the hash <src> should have, when known. Sets got_name (its name in <dir>),
+# got_sha, and got_new (empty when an identical file was already there). 0 only when verified.
+put_verified() {
+  local src=$1 dir=$2 want=$3 name=${1:t} size part sum pid have
+  got_name= got_sha= got_new=
+  size=$(size_of "$src") || return 1
+  # Same name there already: identical means done; different means use another name.
+  if [[ -e $dir/$name ]]; then
+    if [[ $(size_of "$dir/$name") == $size ]]; then
+      [[ -n $want ]] || { progress hashing; want=$(sha256 "$src") } || return 1
+      progress verifying $size
+      if [[ $(sha256 "$dir/$name") == "$want" ]]; then got_name=$name got_sha=$want; return 0; fi
+    fi
+    name=$(free_name "$dir" "$name")
+  fi
+  # Hidden until verified, so nothing downstream picks up half a file.
+  part=$dir/.$name.velcro-part sum=$(mktemp -t velcro) || return 1
+  rm -f "$part"
+  { tee -- "$part" <"$src" | /usr/bin/openssl dgst -sha256 -r >"$sum" } 2>>"$LOG" &
+  pid=$!
+  while kill -0 $pid 2>/dev/null; do progress copying $(size_of "$part"); zselect -t 50; done
+  wait $pid || { log "import: copy failed: $src → $dir"; rm -f "$part" "$sum"; return 1; }
+  got_sha=$(<"$sum"); got_sha=${got_sha%% *}; rm -f "$sum"
+  if [[ -n $want && $got_sha != "$want" ]]; then
+    log "import: $src doesn't match its recorded SHA-256"; rm -f "$part"; return 1
+  fi
+  progress verifying $size
+  # Read back from the destination, not from what we just sent.
+  have=$(sha256 "$part")
+  if [[ $(size_of "$part") != $size || $have != "$got_sha" ]]; then
+    log "import: copy of $src differs (size $(size_of "$part")/$size, sha256 $have/$got_sha)"
+    rm -f "$part"; return 1
+  fi
+  touch -r "$src" "$part"
+  mv -n "$part" "$dir/$name" && [[ ! -e $part && $(size_of "$dir/$name") == $size ]] ||
+    { log "import: couldn't rename $part"; return 1; }
+  got_name=$name got_new=1
+}
+
+# Append one line to <dir>/.velcro-import.jsonl, unless that file is already listed with this hash.
+manifest_add() {
+  local dir=$1 name=$2 orig=$3 size=$4 sha=$5 at=$6 device=$7 uuid=$8 secs=$9
+  [[ -f $dir/$MANIFEST ]] && grep -qF "\"file\":$(json_str $name),\"size\":$size,\"sha256\":\"$sha\"" "$dir/$MANIFEST" && return 0
+  print -r -- "{\"file\":$(json_str $name),\"size\":$size,\"sha256\":\"$sha\",\"imported_at\":\"$at\",\"device\":$(json_str $device),\"device_uuid\":$(json_str $uuid),\"original\":$(json_str $orig),\"duration_s\":${secs:-null}}" >>"$dir/$MANIFEST"
+}
+
+# Seconds of audio, from the file header (afinfo reads WAV, MP3, M4A, AAC, FLAC ...).
+duration() { afinfo "$1" 2>/dev/null | awk '/estimated duration/ { printf "%.1f", $3; exit }'; }
+
+# Import every recording on the recorder at <mount point>.
+import_volume() {
+  setopt local_options extended_glob
+  local mp=$1 id uuid device dest dir f secs pat
+  local -a files ok failed exts
+  local -F total_secs=0
+  id=$(volume_id "$mp"); uuid=${id%%$SEP*} device=${id#*$SEP}; device=${device:-${mp:t}}
+  exts=(${(s: :)${(L)$(setting import.ext)//[^a-z0-9 ]/}})
+  (( ${#exts} )) || { notify "No file types to import (velcro set import.ext wav mp3)"; return 1; }
+  # Hidden files and folders stay out: ._ files on FAT drives, .Trashes, .Spotlight-V100.
+  pat="(#i)[^.]*.(${(j:|:)exts})(N.)"
+  files=("$mp"/**/${~pat})
+  (( ${#files} )) || { log "import: nothing to import on $device"; return 0; }
+
+  dest=$(setting import.dest)
+  [[ -n $dest ]] || { notify "Recorder $device: choose where recordings go first (velcro set import.dest <folder>)"; return 1; }
+  if ready_dir "$dest"; then dir=$dest; else dir=$QUEUE; mkdir -p "$QUEUE/.meta"; fi
+  log "import: ${#files} file(s) from $device → $dir"
+
+  P_I=0 P_N=${#files} P_DONE=0 P_TOTAL=0
+  for f in $files; do (( P_TOTAL += $(size_of "$f") )); done
+  for f in $files; do
+    (( P_I++ )); P_NAME=${f:t}
+    secs=$(duration "$f")
+    if put_verified "$f" "$dir"; then
+      ok+=("$f"); (( total_secs += ${secs:-0} ))
+      if [[ $dir == $QUEUE ]]; then
+        # Remember what manifest_add needs for when the file moves on to import.dest.
+        [[ -e $QUEUE/.meta/$got_name ]] ||
+          print -r -- "${f:t}$SEP$(size_of "$f")$SEP$got_sha$SEP$(now_iso)$SEP$device$SEP$uuid$SEP$secs" >"$QUEUE/.meta/$got_name"
+      else
+        manifest_add "$dir" "$got_name" "${f:t}" "$(size_of "$f")" "$got_sha" "$(now_iso)" "$device" "$uuid" "$secs"
+      fi
+      [[ -n $got_new ]] && log "import: $f → $dir/$got_name ($got_sha)" || log "import: $f already in $dir"
+    else
+      failed+=("$f")
+    fi
+    (( P_DONE += $(size_of "$f") ))
+  done
+
+  if (( ${#failed} )); then
+    notify "Recorder $device: ${#failed} of ${#files} recordings couldn't be copied or didn't verify. Nothing was deleted from the recorder; see the log."
+    return 1
+  fi
+  if is_on import.delete; then
+    for f in $ok; do rm -f -- "$f" "${f:h}/._${f:t}" || { notify "Couldn't delete $f from the recorder"; return 1; }; done
+  fi
+  local length= where= minutes
+  printf -v minutes %.0f $(( total_secs / 60 ))
+  if (( minutes )); then length=" ($minutes min)"; elif (( total_secs )); then length=" (under a minute)"; fi
+  [[ $dir == $QUEUE ]] && where=", kept on this Mac until the NAS is back"
+  diskutil eject "$mp" >/dev/null 2>>"$LOG" || log "import: couldn't eject $mp"
+  notify "Imported ${#ok} recording$([[ ${#ok} == 1 ]] || print s)$length$where"
+}
+
+# Move recordings kept on this Mac to import.dest, verifying each before deleting it here.
+flush_queue() {
+  local dest=$(setting import.dest) f meta orig size sha at device uuid secs
+  local -a files moved failed
+  files=("$QUEUE"/[^.]*(N.))
+  (( ${#files} )) && ready_dir "$dest" || return 0
+  P_I=0 P_N=${#files} P_DONE=0 P_TOTAL=0
+  for f in $files; do (( P_TOTAL += $(size_of "$f") )); done
+  for f in $files; do
+    (( P_I++ )); P_NAME=${f:t}
+    orig=${f:t} size= sha= at=$(now_iso) device= uuid= secs=
+    meta=$QUEUE/.meta/${f:t}
+    [[ -r $meta ]] && IFS=$SEP read -r orig size sha at device uuid secs <"$meta"
+    if put_verified "$f" "$dest" "$sha"; then
+      manifest_add "$dest" "$got_name" "$orig" "$(size_of "$f")" "$got_sha" "$at" "$device" "$uuid" "$secs"
+      log "import: moved $f → $dest/$got_name"
+      rm -f -- "$f" "$meta"; moved+=("$f")
+    else
+      failed+=("$f")
+    fi
+    (( P_DONE += ${size:-0} ))
+  done
+  (( ${#moved} )) && notify "Moved ${#moved} recording$([[ ${#moved} == 1 ]] || print s) from this Mac to $dest"
+  (( ${#failed} )) && notify "${#failed} recording(s) are still on this Mac: they couldn't be copied to the NAS or didn't verify. See the log."
   return 0
 }
 
-install_menubar() {
-  local src=${SELF:h}/assets/logo/png
-  if [[ -d $src ]]; then mkdir -p "$ICONS"; cp -f "$src"/*.png "$ICONS"/; fi
-  if [[ ! -d /Applications/SwiftBar.app ]]; then
-    print "menu bar: skipped — brew install --cask swiftbar, then velcro install"
+# velcro import [--auto] [mount point ...]
+cmd_import() {
+  local auto= mp round
+  [[ $1 == --auto ]] && { auto=1; shift; }
+  # Quick exit for the LaunchAgent, which runs this on every mount of anything.
+  local -a waiting=("$QUEUE"/[^.]*(N.[1]))
+  [[ -n $auto && $# == 0 && -z $(setting recorder) && ${#waiting} == 0 ]] && return 0
+  mkdir -p "$CONF_DIR" "$SUPPORT" "${LOG:h}"
+  # One import at a time, separate from the reconnect lock so shares keep coming back meanwhile.
+  # A second request (say, the NAS remounting mid-import) asks the running one to look again.
+  local lockfd
+  : >>"$IMPORT_LOCK"
+  if ! zsystem flock -t 0 -f lockfd "$IMPORT_LOCK" 2>/dev/null; then
+    : >"$IMPORT_AGAIN"
+    print "an import is already running"
     return 0
   fi
-  local dir=$(swiftbar_dir)
-  defaults read com.ameba.SwiftBar PluginDirectory >/dev/null 2>&1 ||
-    defaults write com.ameba.SwiftBar PluginDirectory "$dir"
-  mkdir -p "$dir"
-  cat >"$dir/$SWIFTBAR_PLUGIN" <<EOF
-#!/bin/zsh
-# <xbar.title>velcro</xbar.title>
-# <xbar.desc>Keep network shares stuck to your Mac</xbar.desc>
-# <swiftbar.hideAbout>true</swiftbar.hideAbout>
-# <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
-# <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
-# <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
-# <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
-exec "$BIN" swiftbar
-EOF
-  chmod +x "$dir/$SWIFTBAR_PLUGIN"
-  if pgrep -xq SwiftBar; then refresh_menubar; else open -g -a SwiftBar; fi
-  print "menu bar: $dir/$SWIFTBAR_PLUGIN"
-}
-
-# " <param>=<base64 png>" for one of velcro's icons, or nothing if it's missing.
-icon() { [[ -r $ICONS/$1.png ]] && print -rn -- " $2=$(base64 -i "$ICONS/$1.png")"; }
-
-# SwiftBar menu: plain text and velcro's own icons only.
-cmd_swiftbar() {
-  local -a rows words
-  local row st name mp h line url paused= up=0 total bar
-  [[ -e $PAUSE ]] && paused=1
-  rows=("${(@f)$(scan fast)}")
-  [[ -z ${rows[1]} ]] && rows=()
-  total=${#rows}
-  for row in $rows; do [[ $row == mounted$SEP* ]] && (( up++ )); done
-
-  if [[ -n $paused ]]; then bar=paused
-  elif (( total == 0 || up < total )); then bar=detached
-  else bar=connected; fi
-
-  print -r -- "|$(icon menubar-$bar templateImage)"
-  print -- "---"
-  print -r -- "velcro |$(icon app-18 image)"
-  if [[ -n $paused ]]; then print -- "Paused | size=12 color=#8a8a8a"
-  elif (( total == 0 )); then print -- "No shares yet | size=12 color=#8a8a8a"
-  else print -- "$up of $total attached | size=12 color=#8a8a8a"; fi
-  # One section per server, its shared folders underneath.
-  local srv n m
-  for srv in ${(u)${rows[@]#*$SEP*$SEP*$SEP}%%$SEP*}; do
-    n=0 m=0
-    for row in $rows; do
-      IFS=$SEP read -r st name mp h line <<<"$row"
-      [[ $h == "$srv" ]] || continue
-      (( n++ )); [[ $st == mounted ]] && (( m++ ))
-    done
-    print -- "---"
-    print -r -- "$srv   $m/$n | size=12 color=#8a8a8a"
-    for row in $rows; do
-      IFS=$SEP read -r st name mp h line <<<"$row"
-      [[ $h == "$srv" ]] || continue
-      words=(${(z)line}); url=${words[1]}
-      if [[ $st == mounted ]]; then print -r -- "$name |$(icon item-connected templateImage)"
-      elif [[ -n $paused ]]; then print -r -- "$name |$(icon item-paused templateImage)"
-      else print -r -- "$name |$(icon item-detached templateImage)"; fi
-      if [[ $st == mounted ]]; then
-        print -r -- "--Open in Finder | bash=/usr/bin/open param1=\"$mp\" terminal=false"
-      else
-        print -r -- "--Reconnect | bash=\"$BIN\" param1=run terminal=false refresh=true"
-      fi
-      print -r -- "--Remove from velcro | bash=\"$BIN\" param1=rm param2=\"$url\" terminal=false refresh=true"
-    done
+  trap 'rm -f "$IMPORT_STATUS"' EXIT
+  local -a vols
+  for round in 1 2 3; do
+    rm -f "$IMPORT_AGAIN"
+    if [[ -z $auto ]] || is_on import.auto; then
+      if (( $# )); then vols=("$@"); else vols=("${(@f)$(local_volumes)}"); fi
+      for mp in $vols; do
+        [[ -n $mp ]] || continue
+        if is_recorder "$mp"; then
+          import_volume "$mp"
+        elif (( $# )); then
+          print -u2 "not a registered recorder: $mp  (velcro recorder add \"$mp\")"
+        fi
+      done
+    fi
+    flush_queue
+    [[ -e $IMPORT_AGAIN ]] || break
   done
-  (( total )) && print -- "---"
-  if [[ -n $paused ]]; then
-    print -r -- "Resume | bash=\"$BIN\" param1=resume terminal=false refresh=true"
-  else
-    print -r -- "Pause | bash=\"$BIN\" param1=pause terminal=false refresh=true"
-    print -r -- "Reconnect now | bash=\"$BIN\" param1=run terminal=false refresh=true"
-  fi
-  print -r -- "Add share… | bash=\"$BIN\" param1=add-prompt terminal=false refresh=true"
-  print -r -- "Open log | bash=/usr/bin/open param1=\"$LOG\" terminal=false"
+  rm -f "$IMPORT_STATUS"
 }
 
-# "Add share…" in the menu: ask for the address, then add it.
-cmd_add_prompt() {
-  local url
-  url=$(osascript -e 'text returned of (display dialog "SMB address of the share" default answer "smb://user@host/share" with title "velcro" buttons {"Cancel", "Add"} default button "Add")' 2>/dev/null) || return 0
-  [[ -n $url ]] && cmd_add ${(z)url} >>"$LOG" 2>&1
+# velcro recorder [add [mount point] | rm <uuid|name> | candidates]
+cmd_recorder() {
+  local mp id uuid name r
+  local -a regs
+  regs=("${(@f)$(setting_all recorder)}"); [[ -z ${regs[1]} ]] && regs=()
+  case $1 in
+    ""|list)
+      (( ${#regs} )) || { print "no recorders yet  →  plug one in, then: velcro recorder add"; return 0; }
+      for r in $regs; do print -r -- "  $r"; done
+      local mounted=("${(@f)$(local_volumes)}")
+      for mp in $mounted; do [[ -n $mp ]] && is_recorder "$mp" && print -r -- "plugged in: $mp"; done
+      ;;
+    candidates)
+      # For velcro.app: local volumes that aren't recorders yet, as "mount point SEP uuid SEP name".
+      local_volumes | while IFS= read -r mp; do
+        is_recorder "$mp" && continue
+        id=$(volume_id "$mp") || continue
+        print -r -- "$mp$SEP$id"
+      done
+      ;;
+    add)
+      mp=$2
+      if [[ -z $mp ]]; then
+        local -a c=("${(@f)$(cmd_recorder candidates)}"); [[ -z ${c[1]} ]] && c=()
+        (( ${#c} == 1 )) || {
+          print -u2 "plug in the recorder, then name its volume: velcro recorder add /Volumes/<name>"
+          (( ${#c} )) && print -rlu2 -- "  "${^c%%$SEP*}
+          return 2
+        }
+        mp=${c[1]%%$SEP*}
+      fi
+      [[ ${${(f)"$(local_volumes)"}[(Ie)${mp%/}]} -gt 0 ]] || { print -u2 "not a mounted drive: $mp"; return 2; }
+      is_recorder "$mp" && { print "already a recorder: $mp"; return 0; }
+      id=$(volume_id "$mp") || return 1
+      uuid=${id%%$SEP*} name=${id#*$SEP}
+      if [[ -n $uuid ]]; then r="uuid:$uuid ${name:-${mp:t}}"; else r="name:${name:-${mp:t}}"; fi
+      cmd_set recorder $regs "$r" && print -r -- "recorder added: $r"
+      [[ -n $(setting import.dest) ]] || print "next: velcro set import.dest /Volumes/<share>/<folder>"
+      ;;
+    rm|remove)
+      [[ -n $2 ]] || { print -u2 "usage: velcro recorder rm <uuid or name>"; return 2; }
+      local -a kept
+      for r in $regs; do
+        [[ $r == ("uuid:$2"(| *)|"name:$2"|uuid:*" $2") ]] || kept+=("$r")
+      done
+      (( ${#kept} < ${#regs} )) || { print -u2 "no recorder matches: $2"; return 1; }
+      cmd_set recorder $kept && print "recorder removed: $2"
+      ;;
+    *) print -u2 "usage: velcro recorder [add [/Volumes/<name>] | rm <uuid|name>]"; return 2 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------------------------
+# Send: put a file in the NAS inbox and copy the path another machine sees it at.
+
+# Delete inbox items older than send.keep days.
+clean_inbox() {
+  local inbox=$1 keep=$(setting send.keep) old
+  [[ $keep == <1-> ]] || return 0
+  old=$(find "$inbox" -mindepth 1 -maxdepth 1 ! -name '.*' -mtime +$keep -print -exec rm -rf {} + 2>>"$LOG" | wc -l)
+  (( old )) && log "send: cleaned $(( old )) item(s) older than $keep days from $inbox"
+  return 0
+}
+
+# The clipboard as a file: a copied file itself, or a copied image saved as PNG.
+clipboard_file() {
+  local f
+  f=$(osascript -e 'POSIX path of (the clipboard as «class furl»)' 2>/dev/null) && [[ -e $f ]] &&
+    { print -r -- "$f"; return 0; }
+  mkdir -p "$CLIPS"
+  f=$CLIPS/clip-$(date +%Y%m%d-%H%M%S).png
+  osascript -e 'on run argv' -e 'set f to open for access (POSIX file (item 1 of argv)) with write permission' \
+    -e 'try' -e 'write (the clipboard as «class PNGf») to f' -e 'on error m' -e 'close access f' -e 'error m' \
+    -e 'end try' -e 'close access f' -e 'end run' "$f" >/dev/null 2>&1 && [[ -s $f ]] &&
+    { print -r -- "$f"; return 0; }
+  rm -f "$f"
+  return 1
+}
+
+# velcro send [file ...]   with no file, sends what's on the clipboard. --clean only cleans.
+cmd_send() {
+  local inbox=$(setting send.inbox) f name
+  local -a remote
+  mkdir -p "${LOG:h}"
+  [[ -n $inbox ]] || { notify "Choose an inbox first: velcro set send.inbox /Volumes/<share>/inbox"; return 2; }
+  ready_dir "$inbox" || { notify "The inbox isn't attached: $inbox"; return 1; }
+  clean_inbox "$inbox"
+  [[ $1 == --clean ]] && return 0
+  if (( ! $# )); then
+    f=$(clipboard_file) || { notify "Nothing to send: copy a file or an image first"; return 1; }
+    set -- "$f"
+  fi
+  for f in "$@"; do
+    [[ -e $f ]] || { notify "No such file: $f"; return 1; }
+    f=${f:A}
+    name=$(free_name "$inbox" "${f:t}")
+    # -X: no extended attributes, so the share doesn't collect ._ files.
+    cp -RX -- "$f" "$inbox/.$name.velcro-part" 2>>"$LOG" && mv -n "$inbox/.$name.velcro-part" "$inbox/$name" ||
+      { rm -rf "$inbox/.$name.velcro-part"; notify "Couldn't copy $f to $inbox"; return 1; }
+    log "send: $f → $inbox/$name"
+    remote+=("$(remote_path "$inbox/$name")")
+  done
+  print -rl -- $remote
+  # Only because this was asked for: the paths replace whatever was on the clipboard.
+  print -rn -- "${(F)remote}" | pbcopy
 }
 
 cmd_help() {
@@ -313,13 +779,28 @@ cmd_help() {
 velcro $VERSION — keep network shares stuck to your Mac
 
   velcro add smb://user@host/share [fallback-host ...]
+  velcro add nfs://host/export/path [fallback-host ...]
   velcro rm <url|share>      stop tracking a share
   velcro status              what's mounted, reachable, paused
   velcro pause | resume      stop/start remounting (eject stays ejected)
-  velcro install | uninstall background agent (every ${INTERVAL}s + network change)
-                             and menu bar icon (needs SwiftBar)
-  velcro run                 one pass now (what the agent calls)
+  velcro install | uninstall background agent (every ${INTERVAL}s + network change);
+                             run from velcro.app, links this command instead
+  velcro run                 one pass now
   velcro logs [n]
+
+  velcro import              copy recordings off a plugged-in recorder, verify, delete, eject
+  velcro recorder add        register the plugged-in drive as a recorder (rm <name> to forget it)
+  velcro send [file ...]     put files (or the clipboard) in the NAS inbox, copy the remote path
+  velcro settings            show settings;  velcro set <key> [value ...] to change one
+
+settings ($SETTINGS):
+  import.dest   folder for recordings, e.g. /Volumes/home/recordings
+  import.ext    file types, default "${DEFAULTS[import.ext]}"
+  import.delete delete from the recorder once every copy verifies (yes)
+  import.auto   import as soon as a recorder is plugged in (yes)
+  send.inbox    e.g. /Volumes/home/inbox
+  send.keep     days to keep inbox files (${DEFAULTS[send.keep]}; 0 keeps them)
+  map           path on another machine, e.g. "/Volumes/home -> /mnt/nas/me" (repeatable)
 
 config: $CONF
 EOF
@@ -329,14 +810,19 @@ case ${1:-help} in
   run)         cmd_run ;;
   status|st)   cmd_status ;;
   add)         shift; cmd_add "$@" ;;
-  add-prompt)  cmd_add_prompt ;;
   rm|remove)   shift; cmd_rm "$@" ;;
   install)     cmd_install ;;
   uninstall)   cmd_uninstall ;;
   pause)       cmd_pause ;;
   resume)      cmd_resume ;;
   logs|log)    shift; cmd_logs "$@" ;;
-  swiftbar)    cmd_swiftbar ;;
+  scan)        shift; cmd_scan "$@" ;;
+  env)         cmd_env ;;
+  import)      shift; cmd_import "$@" ;;
+  recorder|recorders) shift; cmd_recorder "$@" ;;
+  send)        shift; cmd_send "$@" ;;
+  settings)    cmd_settings ;;
+  set)         shift; cmd_set "$@" ;;
   version|-v|--version) print "velcro $VERSION" ;;
   help|-h|--help) cmd_help ;;
   *) print -u2 "unknown command: $1"; cmd_help; exit 2 ;;

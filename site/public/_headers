@@ -1,0 +1,15 @@
+/*.zip
+  Content-Type: application/zip
+  Cache-Control: public, max-age=300
+
+/install
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=60
+
+/velcro
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=60
+
+/latest
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: no-cache

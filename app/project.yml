@@ -1,0 +1,39 @@
+# Xcode project for velcro.app. Generate it with `xcodegen` (brew install xcodegen),
+# or just run scripts/build-app.
+name: velcro
+options:
+  bundleIdPrefix: io.github.dgitco
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: 0.4.0
+    CURRENT_PROJECT_VERSION: 1
+    SWIFT_VERSION: "6.0"
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    ENABLE_HARDENED_RUNTIME: YES
+    # Ad-hoc by default so anyone can build; scripts/build-app re-signs with SIGN_IDENTITY.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEAD_CODE_STRIPPING: YES
+targets:
+  velcro:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+      # The command line tool the app runs for every share operation.
+      - path: ../velcro
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.dgitco.velcro.app
+        PRODUCT_NAME: velcro
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_CFBundleDisplayName: velcro
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        INFOPLIST_KEY_NSHumanReadableCopyright: MIT License
