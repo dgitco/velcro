@@ -1,8 +1,17 @@
 // velcro.dgit.co: static landing page and the app download.
 // Deploy: scripts/deploy-site (copies the release zip in, then wrangler deploy).
+// The worker (worker.ts) runs only for the downloads, to count them; everything else is a plain asset.
 {
   "name": "velcro-site",
   "compatibility_date": "2026-09-01",
-  "assets": { "directory": "./public" },
+  "main": "worker.ts",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/latest", "/velcro", "/velcro-*.zip"]
+  },
+  "d1_databases": [
+    { "binding": "STATS", "database_name": "dgit-stats", "database_id": "19fcfe2a-bbd7-433c-8a00-967c7c600a2b" }
+  ],
   "routes": [{ "pattern": "velcro.dgit.co", "custom_domain": true }]
 }
