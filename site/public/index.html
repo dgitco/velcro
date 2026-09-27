@@ -3,8 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>velcro — keeps network shares mounted on your Mac</title>
-<meta name="description" content="velcro is a small menu bar app for macOS that reconnects your SMB and NFS shares after Wi‑Fi drops, sleep, and network changes.">
+<title>velcro: auto-reconnect SMB and NFS network shares on your Mac (free)</title>
+<meta name="description" content="Free, open-source menu bar app that keeps SMB and NFS shares mounted on macOS. Reconnects your NAS after sleep, Wi‑Fi drops, and network changes, with LAN and Tailscale fallback. Also imports USB voice recorders to a NAS.">
+<link rel="canonical" href="https://velcro.dgit.co/">
+<meta property="og:type" content="website">
 <meta property="og:title" content="velcro">
 <meta property="og:description" content="Keeps your network shares mounted on your Mac.">
 <meta property="og:image" content="https://velcro.dgit.co/og.png">
@@ -17,6 +19,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/style.css">
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "velcro", "description": "Menu bar app and command for macOS that keeps SMB and NFS network shares mounted, reconnecting after sleep, Wi-Fi drops, and network changes. Also imports USB voice recorders to a NAS and sends files to a NAS inbox.", "applicationCategory": "UtilitiesApplication", "operatingSystem": "macOS 13 or later", "softwareVersion": "0.4.0", "url": "https://velcro.dgit.co/", "downloadUrl": "https://velcro.dgit.co/download", "installUrl": "https://velcro.dgit.co/#install", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "sameAs": ["https://github.com/dgitco/velcro"], "publisher": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Why does macOS say it can't check velcro?", "acceptedAnswer": {"@type": "Answer", "text": "velcro is free and isn't notarized, which takes a paid Apple Developer membership. macOS only checks apps a browser downloaded, so installing with the curl command skips the dialog; the installer checks the download's SHA-256 instead. If you downloaded the zip, open velcro once, click Done, then click Open Anyway in System Settings › Privacy & Security. Or run xattr -dr com.apple.quarantine /Applications/velcro.app."}}, {"@type": "Question", "name": "What will macOS ask me to allow?", "acceptedAnswer": {"@type": "Answer", "text": "Notifications, to tell you when an import or a send is done, and Login Items, to start at login. The first time velcro imports or sends, macOS may ask to let it open files on a removable volume or a network volume. velcro doesn't need Full Disk Access, Accessibility, or Screen Recording."}}, {"@type": "Question", "name": "Does velcro see my passwords?", "acceptedAnswer": {"@type": "Answer", "text": "No. Share passwords stay in your keychain; macOS uses them to mount and velcro never reads them. If there's no saved password, macOS shows its own login window once. velcro keeps no tokens or keys of its own."}}, {"@type": "Question", "name": "What does it do with my clipboard?", "acceptedAnswer": {"@type": "Answer", "text": "It notices when you copy an image or a file and lists the last four in the menu. Copied images are kept in ~/Library/Application Support/velcro/clips until they drop off the list or velcro quits, and anything a password manager marks as private is skipped. velcro only writes to the clipboard when you pick something to send, and never sends anything on its own."}}, {"@type": "Question", "name": "Where does it keep things?", "acceptedAnswer": {"@type": "Answer", "text": "Shares and settings in ~/.config/velcro, the log in ~/Library/Logs/velcro.log, and recordings waiting for the NAS in ~/Library/Application Support/velcro/import-queue."}}, {"@type": "Question", "name": "How do I uninstall it?", "acceptedAnswer": {"@type": "Answer", "text": "Run velcro uninstall, then move velcro.app to the Trash. Delete ~/.config/velcro too if you want your settings gone."}}]}]</script>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
@@ -48,6 +51,7 @@
 <header class="header">
   <a class="brand" href="/"><svg><use href="#mark"/></svg>velcro</a>
   <nav>
+    <a class="nav-pill" href="/guides">Guides</a>
     <a class="nav-pill" href="https://github.com/dgitco/velcro">GitHub</a>
     <a class="btn btn-sm" href="#install">Install</a>
   </nav>
@@ -149,6 +153,17 @@ Only change things with velcro commands; velcro help lists them. If macOS asks f
     <a class="btn btn-outline" href="/download"><svg><use href="#i-download"/></svg>Download for macOS</a>
   </section>
 
+  <section class="section" id="guides">
+    <h2>Guides</h2>
+    <ul class="list guides">
+      <li><a href="/guides/reconnect-network-shares-mac"><div><b>How to automatically reconnect network shares on a Mac</b><span>macOS mounts an SMB or NFS share once and doesn’t try again when the connection drops. Here are the ways to make shares come back on their own, and what each one misses.</span></div></a></li>
+      <li><a href="/guides/mac-nas-disconnects-after-sleep"><div><b>Why your Mac loses its NAS shares after sleep</b><span>You open the lid and the share on your Synology, TrueNAS, or Windows server is gone, or macOS says server connections were interrupted. What’s happening, and how to stop reconnecting by hand.</span></div></a></li>
+      <li><a href="/guides/mac-nas-over-tailscale"><div><b>Keep NAS shares mounted on a Mac at home and away (LAN and Tailscale)</b><span>Use the fast local address at home and your Tailscale name everywhere else, without ejecting and reconnecting every time you leave the house.</span></div></a></li>
+      <li><a href="/guides/usb-voice-recorder-to-nas"><div><b>Copy recordings from a USB voice recorder to your NAS automatically on a Mac</b><span>Plug in the recorder and every recording lands on your NAS, checked byte for byte, with the recorder cleared and ejected. A manifest file makes it easy to feed a transcription pipeline.</span></div></a></li>
+      <li><a href="/guides/send-screenshots-to-remote-server"><div><b>Send a screenshot from your Mac to a remote server (for Claude Code or Codex over SSH)</b><span>When your coding agent runs on a server over SSH, pasting an image into the terminal doesn’t work. Put the file on a share both machines can see, and paste its path instead.</span></div></a></li>
+    </ul>
+  </section>
+
   <section class="section" id="faq">
     <h2>Questions</h2>
     <div class="list faq">
@@ -183,6 +198,7 @@ Only change things with velcro commands; velcro help lists them. If macOS asks f
 <footer class="footer">
   <div class="footer-links">
     <span class="brand small"><svg><use href="#mark"/></svg>velcro</span>
+    <a href="/guides">Guides</a>
     <a href="https://github.com/dgitco/velcro">GitHub</a>
     <span>MIT License</span>
     <a href="https://dgit.co">dgit</a>

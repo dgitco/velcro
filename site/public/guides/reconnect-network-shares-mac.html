@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How to automatically reconnect network shares on a Mac | velcro</title>
+<meta name="description" content="macOS mounts an SMB or NFS share once and doesn’t try again when the connection drops. Here are the ways to make shares come back on their own, and what each one misses.">
+<link rel="canonical" href="https://velcro.dgit.co/guides/reconnect-network-shares-mac">
+<meta property="og:type" content="article">
+<meta property="og:title" content="How to automatically reconnect network shares on a Mac">
+<meta property="og:description" content="macOS mounts an SMB or NFS share once and doesn’t try again when the connection drops. Here are the ways to make shares come back on their own, and what each one misses.">
+<meta property="og:image" content="https://velcro.dgit.co/og.png">
+<meta property="og:url" content="https://velcro.dgit.co/guides/reconnect-network-shares-mac">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<script>try{var t=localStorage.getItem("dgit-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "TechArticle", "headline": "How to automatically reconnect network shares on a Mac", "description": "macOS mounts an SMB or NFS share once and doesn’t try again when the connection drops. Here are the ways to make shares come back on their own, and what each one misses.", "url": "https://velcro.dgit.co/guides/reconnect-network-shares-mac", "datePublished": "2026-09-27", "dateModified": "2026-09-27", "inLanguage": "en", "author": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}, "publisher": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}, "about": {"@type": "SoftwareApplication", "name": "velcro", "url": "https://velcro.dgit.co/", "operatingSystem": "macOS"}}, {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "velcro", "item": "https://velcro.dgit.co/"}, {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://velcro.dgit.co/guides"}, {"@type": "ListItem", "position": 3, "name": "Auto-reconnect network shares", "item": "https://velcro.dgit.co/guides/reconnect-network-shares-mac"}]}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Does velcro work with Synology, QNAP, TrueNAS, Unraid, or Windows shares?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. velcro works with any server your Mac can mount with smb:// or nfs:// in Finder. It uses the same macOS mount as Finder does."}}, {"@type": "Question", "name": "Does velcro store my NAS password?", "acceptedAnswer": {"@type": "Answer", "text": "No. The password stays in the macOS keychain, where Finder saved it. If there is no saved password, macOS shows its own login window once."}}, {"@type": "Question", "name": "Is velcro free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. velcro is free and open source under the MIT license."}}]}]</script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <clipPath id="cl"><circle cx="26.2" cy="35.5" r="6"/></clipPath>
+    <clipPath id="cr"><circle cx="37.8" cy="35.5" r="6"/></clipPath>
+    <mask id="mr" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><path clip-path="url(#cl)" d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="#000" stroke-width="12"/></mask>
+    <mask id="mh" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><circle clip-path="url(#cr)" cx="32" cy="46" r="12" fill="none" stroke="#000" stroke-width="12"/></mask>
+    <symbol id="mark" viewBox="0 0 64 64">
+      <circle cx="32" cy="46" r="12" fill="none" stroke="currentColor" stroke-width="6" mask="url(#mr)"/>
+      <path d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" mask="url(#mh)"/>
+    </symbol>
+  </defs>
+</svg>
+<header class="header">
+  <a class="brand" href="/"><svg><use href="#mark"/></svg>velcro</a>
+  <nav>
+    <a class="nav-pill" href="/guides">Guides</a>
+    <a class="nav-pill" href="https://github.com/dgitco/velcro">GitHub</a>
+    <a class="btn btn-sm" href="/#install">Install</a>
+  </nav>
+</header>
+<main>
+<article class="article">
+<p class="crumb"><a href="/">velcro</a> › <a href="/guides">Guides</a></p>
+<h1>How to automatically reconnect network shares on a Mac</h1>
+<p class="dek">macOS mounts an SMB or NFS share once and doesn’t try again when the connection drops. Here are the ways to make shares come back on their own, and what each one misses.</p>
+<h2>Why shares don’t come back</h2>
+<p>When you connect to a server in Finder (Go › Connect to Server) or double-click a share, macOS mounts it and keeps it until the connection breaks. That happens when Wi‑Fi drops, when the Mac sleeps long enough for the server to close the session, when you move between networks, or when a VPN comes up or goes down. Once a share is gone, nothing in macOS mounts it again. You reconnect by hand.</p>
+
+<h2>Option 1: Open at Login</h2>
+<p>Mount the share, then add it to System Settings › General › Login Items › Open at Login (you can drag the mounted volume into the list). macOS mounts it every time you log in.</p>
+<p>That’s all it does. After sleep, a Wi‑Fi change, or a VPN switch, the share stays gone until you log out and in again.</p>
+
+<h2>Option 2: A script with <code>mount volume</code></h2>
+<p>AppleScript can mount a share, and you can run it at login or on a schedule with launchd:</p>
+<pre>osascript -e 'mount volume "smb://me@nas.local/home"'</pre>
+<p>This works, but you own the edge cases. Run it while the server is away and macOS shows an error dialog. Run it every minute and login prompts can stack up. A script that checks a share by listing it can hang for a long time when the server has just disappeared.</p>
+
+<h2>Option 3: autofs</h2>
+<p>macOS includes <code>autofs</code>, which mounts a share the first time something opens its path. You set it up by editing <code>/etc/auto_master</code> and a map file with admin rights. It’s powerful, but major macOS updates may replace those files, shares mount outside <code>/Volumes</code>, and anything that touches the path while the server is unreachable can hang.</p>
+
+<h2>Option 4: velcro</h2>
+<p><a href="/">velcro</a> is a free, open-source menu bar app and command that reconnects your shares for you:</p>
+<ul>
+<li>Right after the network changes or the Mac wakes, and on a timer (every minute by default).</li>
+<li>It reads the mount table instead of touching a share, so a dead server can’t freeze Finder or a terminal.</li>
+<li>No error dialogs: problems go to a log. It uses the password already in your keychain.</li>
+<li>Fallback hosts: try the LAN address first, then a Tailscale name (see <a href="/guides/mac-nas-over-tailscale">home and away</a>).</li>
+<li>Pause it when you want an ejected share to stay ejected.</li>
+</ul>
+<pre>curl -fsSL https://velcro.dgit.co/install | sh
+velcro add smb://me@nas.local/home
+velcro status</pre>
+
+<h2>Side by side</h2>
+<div class="table-wrap"><table>
+<tr><th></th><th>After login</th><th>After sleep or a network change</th><th>Safe when the server is away</th><th>Setup</th></tr>
+<tr><td>Open at Login</td><td>Yes</td><td>No</td><td>Yes</td><td>System Settings</td></tr>
+<tr><td><code>mount volume</code> script</td><td>Yes</td><td>If you schedule it</td><td>Depends on the script</td><td>Write and maintain it</td></tr>
+<tr><td>autofs</td><td>On first access</td><td>On first access</td><td>Can hang</td><td>Edit system files as admin</td></tr>
+<tr><td>velcro</td><td>Yes</td><td>Yes</td><td>Yes</td><td>One command or the menu</td></tr>
+</table></div>
+<h2>Questions</h2>
+<p><b>Does velcro work with Synology, QNAP, TrueNAS, Unraid, or Windows shares?</b><br>Yes. velcro works with any server your Mac can mount with smb:// or nfs:// in Finder. It uses the same macOS mount as Finder does.</p>
+<p><b>Does velcro store my NAS password?</b><br>No. The password stays in the macOS keychain, where Finder saved it. If there is no saved password, macOS shows its own login window once.</p>
+<p><b>Is velcro free?</b><br>Yes. velcro is free and open source under the MIT license.</p>
+<div class="cta">
+<p><b>velcro</b> is a free, open-source menu bar app and command for macOS 13 or later. It keeps SMB and NFS shares mounted, imports USB voice recorders to a NAS, and sends files to a NAS inbox.</p>
+<a class="btn" href="/#install">Install velcro</a>
+</div>
+</article>
+</main>
+<footer class="footer">
+  <div class="footer-links">
+    <span class="brand small"><svg><use href="#mark"/></svg>velcro</span>
+    <a href="/guides">Guides</a>
+    <a href="https://github.com/dgitco/velcro">GitHub</a>
+    <span>MIT License</span>
+    <a href="https://dgit.co">dgit</a>
+  </div>
+</footer>
+</body>
+</html>

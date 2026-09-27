@@ -124,6 +124,14 @@ velcro.app runs that pass itself when the network changes, when the Mac wakes, a
 - **Fallback hosts and untrusted networks:** velcro connects to the first host that answers. A private LAN address like `192.168.1.10` may belong to a stranger's device on café Wi‑Fi. If you roam, prefer a name only your network resolves (Tailscale MagicDNS, `.local` Bonjour names) or list the private IP last.
 - A share that drops while a file is open can still make Finder hang for a moment — that's the macOS client, not velcro.
 
+## Guides
+
+- [How to automatically reconnect network shares on a Mac](https://velcro.dgit.co/guides/reconnect-network-shares-mac): Open at Login, `mount volume` scripts, autofs, and velcro compared
+- [Why your Mac loses its NAS shares after sleep](https://velcro.dgit.co/guides/mac-nas-disconnects-after-sleep)
+- [Keep NAS shares mounted at home and away (LAN and Tailscale)](https://velcro.dgit.co/guides/mac-nas-over-tailscale)
+- [Copy recordings from a USB voice recorder to your NAS automatically](https://velcro.dgit.co/guides/usb-voice-recorder-to-nas)
+- [Send a screenshot to a remote server for Claude Code or Codex over SSH](https://velcro.dgit.co/guides/send-screenshots-to-remote-server)
+
 ## FAQ
 
 **Why does macOS say it can't check velcro?** velcro isn't notarized: that takes a paid Apple Developer membership, and velcro is free. macOS only checks apps a browser downloaded, so the `curl` installer skips the dialog and checks the SHA-256 instead. With the zip, open velcro once, click Done, then click **Open Anyway** in System Settings › Privacy & Security, or run `xattr -dr com.apple.quarantine /Applications/velcro.app`.

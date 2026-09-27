@@ -22,8 +22,37 @@ cp $root/velcro $pub/velcro
 # What the installer reads to know what to fetch and which checksums to expect.
 print -l "version=$version" "zip=${zip:t}" "zip_sha256=$(sha $zip)" "cli_sha256=$(sha $root/velcro)" >$pub/latest
 print "/download /${zip:t} 302" >$pub/_redirects
-print "staged velcro $version in $pub"
+# The version search engines see in the page's structured data.
+sed -i '' -E "s/\"softwareVersion\": *\"[^\"]*\"/\"softwareVersion\": \"$version\"/" $pub/index.html
+
+# sitemap.xml: every page, dated by its last commit (today if it has none yet).
+site=https://velcro.dgit.co
+local -a pages urls
+pages=($pub/index.html $pub/guides.html $pub/guides/*.html(N))
+{
+  print '<?xml version="1.0" encoding="UTF-8"?>'
+  print '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+  for f in $pages; do
+    local rel=${${f#$pub}%.html} day=$(git -C $root log -1 --format=%cs -- $f 2>/dev/null)
+    [[ $rel == /index ]] && rel=/
+    urls+=($site$rel)
+    print "  <url><loc>$site$rel</loc><lastmod>${day:-$(date +%F)}</lastmod></url>"
+  done
+  print '</urlset>'
+} >$pub/sitemap.xml
+print "staged velcro $version in $pub (${#urls} pages in sitemap.xml)"
 [[ $1 == --stage ]] && exit 0
 
 cd $root/site
 CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-a94e720e299d085a43f09d5ee6dddf74} wrangler deploy
+
+# Tell IndexNow search engines (Bing, which ChatGPT and Copilot search on, Naver, Yandex, ...)
+# what changed. The key is public by design: it's the file at /<key>.txt that proves the site is ours.
+key=$(print $pub/*.txt(N) | xargs -n1 basename | grep -E '^[0-9a-f]{32}\.txt$' | head -1)
+if [[ -n $key ]]; then
+  key=${key%.txt}
+  body=$(print -rn -- "{\"host\":\"velcro.dgit.co\",\"key\":\"$key\",\"keyLocation\":\"$site/$key.txt\",\"urlList\":[$(printf '"%s",' $urls | sed 's/,$//')]}")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST https://api.indexnow.org/indexnow \
+    -H 'Content-Type: application/json; charset=utf-8' -d "$body")
+  print "IndexNow: ${#urls} URLs, HTTP $code"
+fi

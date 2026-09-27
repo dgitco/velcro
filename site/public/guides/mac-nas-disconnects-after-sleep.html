@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why your Mac loses its NAS shares after sleep | velcro</title>
+<meta name="description" content="You open the lid and the share on your Synology, TrueNAS, or Windows server is gone, or macOS says server connections were interrupted. What’s happening, and how to stop reconnecting by hand.">
+<link rel="canonical" href="https://velcro.dgit.co/guides/mac-nas-disconnects-after-sleep">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Why your Mac loses its NAS shares after sleep">
+<meta property="og:description" content="You open the lid and the share on your Synology, TrueNAS, or Windows server is gone, or macOS says server connections were interrupted. What’s happening, and how to stop reconnecting by hand.">
+<meta property="og:image" content="https://velcro.dgit.co/og.png">
+<meta property="og:url" content="https://velcro.dgit.co/guides/mac-nas-disconnects-after-sleep">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<script>try{var t=localStorage.getItem("dgit-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "TechArticle", "headline": "Why your Mac loses its NAS shares after sleep", "description": "You open the lid and the share on your Synology, TrueNAS, or Windows server is gone, or macOS says server connections were interrupted. What’s happening, and how to stop reconnecting by hand.", "url": "https://velcro.dgit.co/guides/mac-nas-disconnects-after-sleep", "datePublished": "2026-09-27", "dateModified": "2026-09-27", "inLanguage": "en", "author": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}, "publisher": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}, "about": {"@type": "SoftwareApplication", "name": "velcro", "url": "https://velcro.dgit.co/", "operatingSystem": "macOS"}}, {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "velcro", "item": "https://velcro.dgit.co/"}, {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://velcro.dgit.co/guides"}, {"@type": "ListItem", "position": 3, "name": "NAS shares drop after sleep", "item": "https://velcro.dgit.co/guides/mac-nas-disconnects-after-sleep"}]}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Why does my Mac say “Server connections interrupted”?", "acceptedAnswer": {"@type": "Answer", "text": "The SMB session to the server ended, usually because the Mac slept or the network changed. macOS asks what to do with shares it can no longer reach."}}, {"@type": "Question", "name": "Can I stop my Mac from disconnecting the NAS during sleep?", "acceptedAnswer": {"@type": "Answer", "text": "Not reliably. Sleep ends the connection on most setups. What you can do is have the share mounted again automatically when the Mac wakes, which is what velcro does."}}]}]</script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <clipPath id="cl"><circle cx="26.2" cy="35.5" r="6"/></clipPath>
+    <clipPath id="cr"><circle cx="37.8" cy="35.5" r="6"/></clipPath>
+    <mask id="mr" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><path clip-path="url(#cl)" d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="#000" stroke-width="12"/></mask>
+    <mask id="mh" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><circle clip-path="url(#cr)" cx="32" cy="46" r="12" fill="none" stroke="#000" stroke-width="12"/></mask>
+    <symbol id="mark" viewBox="0 0 64 64">
+      <circle cx="32" cy="46" r="12" fill="none" stroke="currentColor" stroke-width="6" mask="url(#mr)"/>
+      <path d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" mask="url(#mh)"/>
+    </symbol>
+  </defs>
+</svg>
+<header class="header">
+  <a class="brand" href="/"><svg><use href="#mark"/></svg>velcro</a>
+  <nav>
+    <a class="nav-pill" href="/guides">Guides</a>
+    <a class="nav-pill" href="https://github.com/dgitco/velcro">GitHub</a>
+    <a class="btn btn-sm" href="/#install">Install</a>
+  </nav>
+</header>
+<main>
+<article class="article">
+<p class="crumb"><a href="/">velcro</a> › <a href="/guides">Guides</a></p>
+<h1>Why your Mac loses its NAS shares after sleep</h1>
+<p class="dek">You open the lid and the share on your Synology, TrueNAS, or Windows server is gone, or macOS says server connections were interrupted. What’s happening, and how to stop reconnecting by hand.</p>
+<h2>What happens</h2>
+<p>A mounted SMB share is a long-lived connection between your Mac and the server. While the Mac sleeps it stops answering, and after a while the server closes the session. When the Mac wakes, macOS can sometimes pick the session back up. Often it can’t: the share disappears from Finder, or macOS shows a “Server connections interrupted” alert, and apps that had files open on the share report errors.</p>
+<p>The same thing happens without sleep when the network changes under the share: you move to another Wi‑Fi network, the Mac gets a new address, you plug in Ethernet, or a VPN such as Tailscale connects or disconnects.</p>
+
+<h2>What helps, and what doesn’t</h2>
+<ul>
+<li><b>Wake for network access</b> lets other devices wake your Mac. It doesn’t keep your own shares mounted.</li>
+<li><b>Ethernet</b> drops less often than Wi‑Fi, but sleep still ends the session.</li>
+<li><b>Server settings</b> such as longer SMB timeouts rarely survive a Mac that sleeps for hours.</li>
+<li><b>Reconnecting automatically</b> is the fix that holds up: accept that the connection will drop, and mount the share again as soon as the network is back.</li>
+</ul>
+
+<h2>Reconnect automatically with velcro</h2>
+<p><a href="/">velcro</a> watches for wake and network changes. After a wake it waits a few seconds for the network to settle, checks which of your shares are missing, and mounts them again with the password in your keychain. It checks again every minute in case the first try was too early.</p>
+<pre>curl -fsSL https://velcro.dgit.co/install | sh
+velcro add smb://me@nas.local/home</pre>
+<p>The menu bar icon shows whether every share is attached. If you use shares from a terminal or scripts, <code>velcro status</code> reports the same thing without touching the share, so it answers instantly even while the server is unreachable.</p>
+<p>For other ways to reconnect, and what each one misses, see <a href="/guides/reconnect-network-shares-mac">how to automatically reconnect network shares on a Mac</a>.</p>
+<h2>Questions</h2>
+<p><b>Why does my Mac say “Server connections interrupted”?</b><br>The SMB session to the server ended, usually because the Mac slept or the network changed. macOS asks what to do with shares it can no longer reach.</p>
+<p><b>Can I stop my Mac from disconnecting the NAS during sleep?</b><br>Not reliably. Sleep ends the connection on most setups. What you can do is have the share mounted again automatically when the Mac wakes, which is what velcro does.</p>
+<div class="cta">
+<p><b>velcro</b> is a free, open-source menu bar app and command for macOS 13 or later. It keeps SMB and NFS shares mounted, imports USB voice recorders to a NAS, and sends files to a NAS inbox.</p>
+<a class="btn" href="/#install">Install velcro</a>
+</div>
+</article>
+</main>
+<footer class="footer">
+  <div class="footer-links">
+    <span class="brand small"><svg><use href="#mark"/></svg>velcro</span>
+    <a href="/guides">Guides</a>
+    <a href="https://github.com/dgitco/velcro">GitHub</a>
+    <span>MIT License</span>
+    <a href="https://dgit.co">dgit</a>
+  </div>
+</footer>
+</body>
+</html>

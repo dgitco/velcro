@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keep NAS shares mounted on a Mac at home and away (LAN and Tailscale) | velcro</title>
+<meta name="description" content="Use the fast local address at home and your Tailscale name everywhere else, without ejecting and reconnecting every time you leave the house.">
+<link rel="canonical" href="https://velcro.dgit.co/guides/mac-nas-over-tailscale">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Keep NAS shares mounted on a Mac at home and away (LAN and Tailscale)">
+<meta property="og:description" content="Use the fast local address at home and your Tailscale name everywhere else, without ejecting and reconnecting every time you leave the house.">
+<meta property="og:image" content="https://velcro.dgit.co/og.png">
+<meta property="og:url" content="https://velcro.dgit.co/guides/mac-nas-over-tailscale">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<script>try{var t=localStorage.getItem("dgit-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "TechArticle", "headline": "Keep NAS shares mounted on a Mac at home and away (LAN and Tailscale)", "description": "Use the fast local address at home and your Tailscale name everywhere else, without ejecting and reconnecting every time you leave the house.", "url": "https://velcro.dgit.co/guides/mac-nas-over-tailscale", "datePublished": "2026-09-27", "dateModified": "2026-09-27", "inLanguage": "en", "author": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}, "publisher": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}, "about": {"@type": "SoftwareApplication", "name": "velcro", "url": "https://velcro.dgit.co/", "operatingSystem": "macOS"}}, {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "velcro", "item": "https://velcro.dgit.co/"}, {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://velcro.dgit.co/guides"}, {"@type": "ListItem", "position": 3, "name": "Home and away with Tailscale", "item": "https://velcro.dgit.co/guides/mac-nas-over-tailscale"}]}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Does velcro need Tailscale?", "acceptedAnswer": {"@type": "Answer", "text": "No. Fallback hosts work with any route to your server: a second LAN address, a VPN, or a DNS name. Tailscale is just a common setup."}}]}]</script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <clipPath id="cl"><circle cx="26.2" cy="35.5" r="6"/></clipPath>
+    <clipPath id="cr"><circle cx="37.8" cy="35.5" r="6"/></clipPath>
+    <mask id="mr" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><path clip-path="url(#cl)" d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="#000" stroke-width="12"/></mask>
+    <mask id="mh" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><circle clip-path="url(#cr)" cx="32" cy="46" r="12" fill="none" stroke="#000" stroke-width="12"/></mask>
+    <symbol id="mark" viewBox="0 0 64 64">
+      <circle cx="32" cy="46" r="12" fill="none" stroke="currentColor" stroke-width="6" mask="url(#mr)"/>
+      <path d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" mask="url(#mh)"/>
+    </symbol>
+  </defs>
+</svg>
+<header class="header">
+  <a class="brand" href="/"><svg><use href="#mark"/></svg>velcro</a>
+  <nav>
+    <a class="nav-pill" href="/guides">Guides</a>
+    <a class="nav-pill" href="https://github.com/dgitco/velcro">GitHub</a>
+    <a class="btn btn-sm" href="/#install">Install</a>
+  </nav>
+</header>
+<main>
+<article class="article">
+<p class="crumb"><a href="/">velcro</a> › <a href="/guides">Guides</a></p>
+<h1>Keep NAS shares mounted on a Mac at home and away (LAN and Tailscale)</h1>
+<p class="dek">Use the fast local address at home and your Tailscale name everywhere else, without ejecting and reconnecting every time you leave the house.</p>
+<h2>The problem</h2>
+<p>At home your NAS answers at a local address like <code>192.168.1.10</code> or <code>nas.local</code>. Away from home it answers through Tailscale (or another VPN) at a name like <code>nas.tail1234.ts.net</code>. Finder mounts a share from one address, so every time you switch networks the share breaks and you reconnect with the other address by hand.</p>
+
+<h2>Fallback hosts</h2>
+<p><a href="/">velcro</a> lets one share have several hosts. It tries them in order and mounts from the first one that answers on the share’s port:</p>
+<pre>velcro add smb://me@192.168.1.10/home nas.tail1234.ts.net</pre>
+<p>When the share drops because you left the house, velcro reconnects through Tailscale. When you come back and the Tailscale mount drops, it reconnects through the LAN. A share that’s still working stays where it is; eject it if you want velcro to reconnect through a faster route.</p>
+
+<h2>Put the right host first</h2>
+<p>velcro connects to the first host that answers. A private address like <code>192.168.1.10</code> can belong to a stranger’s device on café or hotel Wi‑Fi. If you travel, list a name only your own network resolves first (a Tailscale MagicDNS name, or a <code>.local</code> Bonjour name), or put the private IP last.</p>
+
+<h2>Use SMB over Tailscale, not NFS</h2>
+<p>SMB needs a single port, 445, which Tailscale passes without extra setup. The macOS NFS client is effectively NFSv3 and needs several more ports (rpcbind, mountd, lockd) that often don’t make it across a VPN. NFS’s usual <code>sys</code> security also trusts any machine with an allowed IP address to say which user it is.</p>
+<h2>Questions</h2>
+<p><b>Does velcro need Tailscale?</b><br>No. Fallback hosts work with any route to your server: a second LAN address, a VPN, or a DNS name. Tailscale is just a common setup.</p>
+<div class="cta">
+<p><b>velcro</b> is a free, open-source menu bar app and command for macOS 13 or later. It keeps SMB and NFS shares mounted, imports USB voice recorders to a NAS, and sends files to a NAS inbox.</p>
+<a class="btn" href="/#install">Install velcro</a>
+</div>
+</article>
+</main>
+<footer class="footer">
+  <div class="footer-links">
+    <span class="brand small"><svg><use href="#mark"/></svg>velcro</span>
+    <a href="/guides">Guides</a>
+    <a href="https://github.com/dgitco/velcro">GitHub</a>
+    <span>MIT License</span>
+    <a href="https://dgit.co">dgit</a>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,5 @@
+# Search engines and AI assistants are welcome to read and cite everything here.
+User-agent: *
+Allow: /
+
+Sitemap: https://velcro.dgit.co/sitemap.xml

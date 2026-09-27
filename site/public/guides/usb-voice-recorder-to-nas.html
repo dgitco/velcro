@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Copy recordings from a USB voice recorder to your NAS automatically on a Mac | velcro</title>
+<meta name="description" content="Plug in the recorder and every recording lands on your NAS, checked byte for byte, with the recorder cleared and ejected. A manifest file makes it easy to feed a transcription pipeline.">
+<link rel="canonical" href="https://velcro.dgit.co/guides/usb-voice-recorder-to-nas">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Copy recordings from a USB voice recorder to your NAS automatically on a Mac">
+<meta property="og:description" content="Plug in the recorder and every recording lands on your NAS, checked byte for byte, with the recorder cleared and ejected. A manifest file makes it easy to feed a transcription pipeline.">
+<meta property="og:image" content="https://velcro.dgit.co/og.png">
+<meta property="og:url" content="https://velcro.dgit.co/guides/usb-voice-recorder-to-nas">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<script>try{var t=localStorage.getItem("dgit-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "TechArticle", "headline": "Copy recordings from a USB voice recorder to your NAS automatically on a Mac", "description": "Plug in the recorder and every recording lands on your NAS, checked byte for byte, with the recorder cleared and ejected. A manifest file makes it easy to feed a transcription pipeline.", "url": "https://velcro.dgit.co/guides/usb-voice-recorder-to-nas", "datePublished": "2026-09-27", "dateModified": "2026-09-27", "inLanguage": "en", "author": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}, "publisher": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}, "about": {"@type": "SoftwareApplication", "name": "velcro", "url": "https://velcro.dgit.co/", "operatingSystem": "macOS"}}, {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "velcro", "item": "https://velcro.dgit.co/"}, {"@type": "ListItem", "position": 2, "name": "Guides", "item": "https://velcro.dgit.co/guides"}, {"@type": "ListItem", "position": 3, "name": "Voice recorder to NAS", "item": "https://velcro.dgit.co/guides/usb-voice-recorder-to-nas"}]}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Which voice recorders work?", "acceptedAnswer": {"@type": "Answer", "text": "Any recorder that appears as a drive in Finder when plugged in over USB, which covers most dictation and meeting recorders."}}, {"@type": "Question", "name": "Can I import to a folder on my Mac instead of a NAS?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Set import.dest to any folder. The NAS queue only kicks in for folders under /Volumes whose share isn’t mounted."}}]}]</script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <clipPath id="cl"><circle cx="26.2" cy="35.5" r="6"/></clipPath>
+    <clipPath id="cr"><circle cx="37.8" cy="35.5" r="6"/></clipPath>
+    <mask id="mr" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><path clip-path="url(#cl)" d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="#000" stroke-width="12"/></mask>
+    <mask id="mh" maskUnits="userSpaceOnUse" x="-20" y="-20" width="104" height="104"><rect x="-20" y="-20" width="104" height="104" fill="#fff"/><circle clip-path="url(#cr)" cx="32" cy="46" r="12" fill="none" stroke="#000" stroke-width="12"/></mask>
+    <symbol id="mark" viewBox="0 0 64 64">
+      <circle cx="32" cy="46" r="12" fill="none" stroke="currentColor" stroke-width="6" mask="url(#mr)"/>
+      <path d="M40 8V30a8 8 0 0 1-16 0v-5" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" mask="url(#mh)"/>
+    </symbol>
+  </defs>
+</svg>
+<header class="header">
+  <a class="brand" href="/"><svg><use href="#mark"/></svg>velcro</a>
+  <nav>
+    <a class="nav-pill" href="/guides">Guides</a>
+    <a class="nav-pill" href="https://github.com/dgitco/velcro">GitHub</a>
+    <a class="btn btn-sm" href="/#install">Install</a>
+  </nav>
+</header>
+<main>
+<article class="article">
+<p class="crumb"><a href="/">velcro</a> › <a href="/guides">Guides</a></p>
+<h1>Copy recordings from a USB voice recorder to your NAS automatically on a Mac</h1>
+<p class="dek">Plug in the recorder and every recording lands on your NAS, checked byte for byte, with the recorder cleared and ejected. A manifest file makes it easy to feed a transcription pipeline.</p>
+<h2>How it works</h2>
+<p>Most voice recorders show up as a USB drive when you plug them in. <a href="/">velcro</a> recognizes yours by its volume UUID and, each time it’s plugged in:</p>
+<ol>
+<li>Copies every recording (WAV, MP3, M4A, and other types you choose) to a folder on your NAS.</li>
+<li>Reads each copy back from the NAS and compares its size and SHA-256 with the original.</li>
+<li>Deletes the recordings from the recorder only if every file matched. If any file didn’t, nothing is deleted.</li>
+<li>Ejects the recorder and shows a notification like “Imported 3 recordings (95 min)”.</li>
+</ol>
+<p>If the NAS share isn’t attached, recordings are checked into a folder on your Mac first and moved to the NAS (and checked again) once it’s back. A file that’s already on the NAS with the same contents is skipped; a different file with the same name is saved as <code>name-2.WAV</code>.</p>
+
+<h2>Set it up</h2>
+<pre>curl -fsSL https://velcro.dgit.co/install | sh
+velcro recorder add                                  # with the recorder plugged in
+velcro set import.dest /Volumes/home/recordings      # a folder on a share</pre>
+<p>Or use the velcro menu: Register Recorder, then pick the folder in Settings › Import. Turn off “Delete from the recorder” if you want to keep a copy on the device.</p>
+
+<h2>Feeding a transcription pipeline</h2>
+<p>Every imported file is appended to <code>.velcro-import.jsonl</code> in the destination folder, one JSON object per line:</p>
+<pre>{"file":"20260105093000.WAV","size":115200512,"sha256":"3a7f…","imported_at":"2026-01-05T11:02:41+09:00","device":"RECORDER","device_uuid":"…","original":"20260105093000.WAV","duration_s":3600.0}</pre>
+<p>A server that mounts the same NAS can watch that file for new lines, check the SHA-256 before using a recording, and run speech-to-text on it. Files only appear under their final name after they’ve been verified, so a watcher never sees half a file.</p>
+<h2>Questions</h2>
+<p><b>Which voice recorders work?</b><br>Any recorder that appears as a drive in Finder when plugged in over USB, which covers most dictation and meeting recorders.</p>
+<p><b>Can I import to a folder on my Mac instead of a NAS?</b><br>Yes. Set import.dest to any folder. The NAS queue only kicks in for folders under /Volumes whose share isn’t mounted.</p>
+<div class="cta">
+<p><b>velcro</b> is a free, open-source menu bar app and command for macOS 13 or later. It keeps SMB and NFS shares mounted, imports USB voice recorders to a NAS, and sends files to a NAS inbox.</p>
+<a class="btn" href="/#install">Install velcro</a>
+</div>
+</article>
+</main>
+<footer class="footer">
+  <div class="footer-links">
+    <span class="brand small"><svg><use href="#mark"/></svg>velcro</span>
+    <a href="/guides">Guides</a>
+    <a href="https://github.com/dgitco/velcro">GitHub</a>
+    <span>MIT License</span>
+    <a href="https://dgit.co">dgit</a>
+  </div>
+</footer>
+</body>
+</html>
