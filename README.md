@@ -75,6 +75,7 @@ Plug in a USB voice recorder and velcro copies its recordings to a folder on you
 ```sh
 velcro recorder add                              # with the recorder plugged in
 velcro set import.dest /Volumes/home/recordings  # a folder on one of your shares
+velcro set import.folder RECORD                  # only the recorder's recordings folder
 velcro import                                    # or just plug it in next time
 ```
 
@@ -105,6 +106,7 @@ Inbox items are deleted after 14 days (`velcro set send.keep 30`, or `0` to keep
 |---|---|---|
 | `import.dest` | | folder for recordings |
 | `import.ext` | `wav mp3 m4a aac flac wma ogg` | file types to take |
+| `import.folder` | | only this folder on the recorder, like `RECORD`; set it if the recorder also holds music |
 | `import.delete` | `yes` | delete from the recorder once every copy verifies |
 | `import.auto` | `yes` | import as soon as a recorder is plugged in |
 | `recorder` | | `uuid:<VolumeUUID> <label>` or `name:<volume name>`, one per recorder |

@@ -45,6 +45,7 @@ struct ImportPane: View {
             Section {
                 FolderField(title: "Folder", key: "import.dest", prompt: "/Volumes/home/recordings")
                 SettingField(title: "File types", key: "import.ext", prompt: "wav mp3 m4a")
+                SettingField(title: "Folder on the recorder", key: "import.folder", prompt: "RECORD (empty: the whole drive)")
                 Toggle("Import as soon as a recorder is plugged in", isOn: flag("import.auto"))
                 Toggle("Delete from the recorder once every copy verifies", isOn: flag("import.delete"))
             } header: {

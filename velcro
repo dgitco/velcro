@@ -6,7 +6,7 @@ setopt pipe_fail
 zmodload zsh/system
 zmodload zsh/zselect
 
-VERSION=0.4.1
+VERSION=0.4.2
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -325,6 +325,7 @@ cmd_env() {
 # Settings: ~/.config/velcro/settings, one "key = value" per line. recorder and map may repeat.
 #   import.dest   = /Volumes/home/recordings        where recordings go (a folder on a share)
 #   import.ext    = wav mp3 m4a                     file types to take from a recorder
+#   import.folder = RECORD                          only this folder on the recorder (and below)
 #   import.delete = yes                             delete from the recorder once verified
 #   import.auto   = yes                             import as soon as a recorder is plugged in
 #   recorder      = uuid:<VolumeUUID> <label>       or name:<volume name>
@@ -332,7 +333,7 @@ cmd_env() {
 #   send.keep     = 14                              days before the inbox is cleaned; 0 keeps all
 #   map           = /Volumes/home -> /mnt/nas/me    how another machine sees a local path
 
-KEYS=(import.dest import.ext import.delete import.auto recorder send.inbox send.keep map)
+KEYS=(import.dest import.ext import.folder import.delete import.auto recorder send.inbox send.keep map)
 typeset -A DEFAULTS=(
   import.ext 'wav mp3 m4a aac flac wma ogg'
   import.delete yes
@@ -375,6 +376,7 @@ cmd_set() {
   for v in "$@"; do
     case $key in
       import.delete|import.auto) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
+      import.folder) [[ $v != /* && $v != (..|*/..|../*|*/../*) ]] || { print -u2 "import.folder is a folder on the recorder, like RECORD"; return 2; } ;;
       send.keep) [[ $v == <-> ]] || { print -u2 "send.keep is a number of days"; return 2; } ;;
       map) [[ $v == /?*' -> '/* ]] || { print -u2 "map looks like: /Volumes/home -> /mnt/nas/me"; return 2; } ;;
       recorder) [[ $v == (uuid|name):?* ]] || { print -u2 "recorder is uuid:<VolumeUUID> or name:<volume name>"; return 2; } ;;
@@ -558,8 +560,15 @@ import_volume() {
   (( ${#exts} )) || { notify "No file types to import (velcro set import.ext wav mp3)"; return 1; }
   # Hidden files and folders stay out: ._ files on FAT drives, .Trashes, .Spotlight-V100.
   pat="(#i)[^.]*.(${(j:|:)exts})(N.)"
-  files=("$mp"/**/${~pat})
-  (( ${#files} )) || { log "import: nothing to import on $device"; return 0; }
+  # Only the recorder's recordings folder when one is set, so music or other files elsewhere on
+  # the drive are never taken (or deleted).
+  local root=$mp sub=${$(setting import.folder)%/}
+  if [[ -n $sub ]]; then
+    root=$mp/$sub
+    [[ -d $root ]] || { log "import: no $sub folder on $device"; return 0; }
+  fi
+  files=("$root"/**/${~pat})
+  (( ${#files} )) || { log "import: nothing to import on $device${sub:+ in $sub}"; return 0; }
 
   dest=$(setting import.dest)
   [[ -n $dest ]] || { notify "Recorder $device: choose where recordings go first (velcro set import.dest <folder>)"; return 1; }
@@ -797,6 +806,7 @@ velcro $VERSION — keep network shares stuck to your Mac
 settings ($SETTINGS):
   import.dest   folder for recordings, e.g. /Volumes/home/recordings
   import.ext    file types, default "${DEFAULTS[import.ext]}"
+  import.folder only this folder on the recorder, e.g. RECORD (default: the whole drive)
   import.delete delete from the recorder once every copy verifies (yes)
   import.auto   import as soon as a recorder is plugged in (yes)
   send.inbox    e.g. /Volumes/home/inbox
