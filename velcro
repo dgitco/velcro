@@ -6,7 +6,7 @@ setopt pipe_fail
 zmodload zsh/system
 zmodload zsh/zselect
 
-VERSION=0.4.0
+VERSION=0.4.1
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -593,12 +593,13 @@ import_volume() {
   fi
   if is_on import.delete; then
     for f in $ok; do rm -f -- "$f" "${f:h}/._${f:t}" || { notify "Couldn't delete $f from the recorder"; return 1; }; done
+    log "import: deleted ${#ok} verified file(s) from $device"
   fi
   local length= where= minutes
   printf -v minutes %.0f $(( total_secs / 60 ))
   if (( minutes )); then length=" ($minutes min)"; elif (( total_secs )); then length=" (under a minute)"; fi
   [[ $dir == $QUEUE ]] && where=", kept on this Mac until the NAS is back"
-  diskutil eject "$mp" >/dev/null 2>>"$LOG" || log "import: couldn't eject $mp"
+  if diskutil eject "$mp" >/dev/null 2>>"$LOG"; then log "import: ejected $device"; else log "import: couldn't eject $mp"; fi
   notify "Imported ${#ok} recording$([[ ${#ok} == 1 ]] || print s)$length$where"
 }
 

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import UserNotifications
 
 /// A drive plugged into this Mac, as `velcro recorder candidates` lists it.
@@ -62,6 +63,15 @@ final class Importer: ObservableObject {
     private var again = false
     private var poll: Timer?
     private let store = Store.shared
+    private var watching: AnyCancellable?
+
+    private init() {
+        // A recorder registered or removed (here or with `velcro recorder` in a terminal) changes
+        // which plugged-in drives are candidates.
+        watching = store.$settings.dropFirst().sink { _ in
+            Task { @MainActor in await Importer.shared.refresh() }
+        }
+    }
 
     var recorders: [Recorder] { (store.settings["recorder"] ?? []).map(Recorder.init) }
 

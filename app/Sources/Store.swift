@@ -32,6 +32,7 @@ final class Store: ObservableObject {
 
     private var refreshing = false
     private var refreshAgain = false
+    private var settingsStamp: Date?
 
     var attached: Int { shares.filter { $0.state == .mounted }.count }
 
@@ -77,6 +78,15 @@ final class Store: ObservableObject {
 
     func setting(_ key: String) -> String { settings[key]?.first ?? "" }
 
+    /// Settings changed with `velcro set` in a terminal show up on the next refresh.
+    private func reloadSettingsIfChanged() async {
+        guard let path = env["SETTINGS"] else { return }
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        guard stamp != settingsStamp else { return }
+        settingsStamp = stamp
+        await loadSettings()
+    }
+
     func loadSettings() async {
         var values: [String: [String]] = [:]
         for line in await CLI.run("settings").split(separator: "\n") {
@@ -104,6 +114,7 @@ final class Store: ObservableObject {
         repeat {
             refreshAgain = false
             apply(await CLI.run("scan", "fast"))
+            await reloadSettingsIfChanged()
         } while refreshAgain
     }
 
