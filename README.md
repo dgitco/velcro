@@ -78,9 +78,10 @@ The first mount may show the usual macOS login prompt — tick **Remember this p
 Plug in a USB voice recorder and velcro copies its recordings to a folder you choose, checks every copy, then clears the recorder and ejects it. The folder can be on your Mac (`~/Recordings`), an external drive, iCloud Drive, or a NAS; you don't need a NAS or any shares for this.
 
 ```sh
-velcro recorder add                              # with the recorder plugged in
-velcro set import.dest ~/Recordings             # or /Volumes/home/recordings on a share
-velcro set import.folder RECORD                  # only the recorder's recordings folder
+velcro recorder add /Volumes/VOICE              # the recorder's volume, plugged in
+velcro set import.folder RECORD                  # optional: only its recordings folder
+velcro set import.delete no                      # optional: keep recordings on the recorder
+velcro set import.dest ~/Recordings             # last: importing starts once this is set
 velcro import                                    # or just plug it in next time
 ```
 

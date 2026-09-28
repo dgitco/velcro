@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.4.5
+VERSION=0.4.6
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -264,8 +264,11 @@ EOF
 cmd_uninstall() {
   stop_agent
   remove_swiftbar
-  [[ -L $BIN ]] && rm -f "$BIN"
-  print "agent removed (config kept in $CONF_DIR)"
+  # The command: a link into velcro.app, or the copy a command-line install made.
+  if [[ -L $BIN ]] || { [[ -f $BIN ]] && grep -q '^# velcro — keep network shares' "$BIN"; }; then
+    rm -f "$BIN" && print "removed $BIN"
+  fi
+  print "agent removed (settings kept in $CONF_DIR; delete that folder too to forget them)"
 }
 
 stop_agent() {
@@ -592,12 +595,22 @@ import_volume() {
   fi
   log "import: ${#files} file(s) from $device → $dir"
 
+  local keep_on_recorder= copied=0
+  is_on import.delete || keep_on_recorder=1
   P_I=0 P_N=${#files} P_DONE=0 P_TOTAL=0
   for f in $files; do (( P_TOTAL += $(size_of "$f") )); done
   for f in $files; do
     (( P_I++ )); P_NAME=${f:t}
+    # Files kept on the recorder come back on every plug-in. Once the manifest lists one from this
+    # recorder at this size, skip it without re-reading, even if it was moved out of the folder.
+    if [[ -n $keep_on_recorder && $dir != $QUEUE && -f $dir/$MANIFEST ]] &&
+       grep -F "\"size\":$(size_of "$f")," "$dir/$MANIFEST" | grep -qF "\"device_uuid\":$(json_str $uuid),\"original\":$(json_str ${f:t})"; then
+      (( P_DONE += $(size_of "$f") ))
+      continue
+    fi
     secs=$(duration "$f")
     if put_verified "$f" "$dir"; then
+      [[ -n $got_new ]] && (( copied++ ))
       ok+=("$f"); (( total_secs += ${secs:-0} ))
       if [[ $dir == $QUEUE ]]; then
         # Remember what manifest_add needs for when the file moves on to import.dest.
@@ -617,6 +630,11 @@ import_volume() {
     notify "Recorder $device: ${#failed} of ${#files} recordings couldn't be copied or didn't verify. Nothing was deleted from the recorder; see the log."
     return 1
   fi
+  # Nothing new and nothing to delete: leave the recorder mounted, say nothing.
+  if [[ -n $keep_on_recorder ]] && (( copied == 0 )); then
+    log "import: nothing new on $device"
+    return 0
+  fi
   if is_on import.delete; then
     for f in $ok; do rm -f -- "$f" "${f:h}/._${f:t}" || { notify "Couldn't delete $f from the recorder"; return 1; }; done
     log "import: deleted ${#ok} verified file(s) from $device"
@@ -626,7 +644,8 @@ import_volume() {
   if (( minutes )); then length=" ($minutes min)"; elif (( total_secs )); then length=" (under a minute)"; fi
   [[ $dir == $QUEUE ]] && where=", kept on this Mac until $dest is attached"
   if diskutil eject "$mp" >/dev/null 2>>"$LOG"; then log "import: ejected $device"; else log "import: couldn't eject $mp"; fi
-  notify "Imported ${#ok} recording$([[ ${#ok} == 1 ]] || print s)$length$where"
+  local n=${#ok}; [[ -n $keep_on_recorder ]] && n=$copied
+  notify "Imported $n recording$([[ $n == 1 ]] || print s)$length$where"
 }
 
 # Move recordings kept on this Mac to import.dest, verifying each before deleting it here.
@@ -731,7 +750,12 @@ cmd_recorder() {
       uuid=${id%%$SEP*} name=${id#*$SEP}
       if [[ -n $uuid ]]; then r="uuid:$uuid ${name:-${mp:t}}"; else r="name:${name:-${mp:t}}"; fi
       cmd_set recorder $regs "$r" && print -r -- "recorder added: $r"
-      [[ -n $(setting import.dest) ]] || print "next: velcro set import.dest <folder>   (~/Recordings, or a folder on a share or drive)"
+      if [[ -z $(setting import.dest) ]]; then
+        print "next, in this order (importing starts once import.dest is set):"
+        print "  velcro set import.folder RECORD   if recordings live in one folder (leaves music etc. alone)"
+        print "  velcro set import.delete no       to keep recordings on the recorder too"
+        print "  velcro set import.dest <folder>   ~/Recordings, or a folder on a drive or share"
+      fi
       ;;
     rm|remove)
       [[ -n $2 ]] || { print -u2 "usage: velcro recorder rm <uuid or name>"; return 2; }
