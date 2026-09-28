@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.4.4
+VERSION=0.4.5
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -751,17 +751,23 @@ cmd_recorder() {
 # copy the path another machine sees it at.
 
 # Delete inbox items older than send.keep days.
-# Delete what velcro itself sent more than send.keep days ago. Other files in the folder are never
-# touched: it may be a Dropbox or shared folder with things of the user's own.
+# Delete what velcro itself sent more than send.keep days ago, and only if it's unchanged since
+# (same size and modification time). Anything else in the folder is never touched: it may be a
+# Dropbox or shared folder with the user's own files, including one that reuses a sent file's name.
 clean_inbox() {
-  local inbox=$1 keep=$(setting send.keep) line at f n=0
+  local inbox=$1 keep=$(setting send.keep) line at f stamp n=0
   [[ $keep == <1-> && -s $SENT ]] || return 0
-  local -a kept
+  local -a kept fields
   for line in "${(@f)$(<$SENT)}"; do
-    at=${line%%$SEP*} f=${line#*$SEP}
-    if [[ $at == <-> ]] && (( EPOCHSECONDS - at > keep * 86400 )) && [[ $f == "$inbox"/?* ]]; then
-      [[ -e $f ]] && rm -rf -- "$f" 2>>"$LOG" && (( n++ ))
-    else
+    fields=("${(@ps:$SEP:)line}")
+    at=${fields[1]} f=${fields[2]} stamp=${fields[3]}
+    if [[ $at == <-> && -n $stamp ]] && (( EPOCHSECONDS - at > keep * 86400 )) && [[ $f == "$inbox"/?* ]]; then
+      if [[ -e $f && $(stat -f '%z:%m' "$f" 2>/dev/null) == "$stamp" ]]; then
+        rm -rf -- "$f" 2>>"$LOG" && (( n++ ))
+      elif [[ -e $f ]]; then
+        log "send: left $f alone: it changed after velcro sent it"
+      fi
+    elif [[ -n $stamp ]]; then
       kept+=("$line")
     fi
   done
@@ -807,7 +813,8 @@ cmd_send() {
     cp -RX -- "$f" "$inbox/.$name.velcro-part" 2>>"$LOG" && mv -n "$inbox/.$name.velcro-part" "$inbox/$name" ||
       { rm -rf "$inbox/.$name.velcro-part"; notify "Couldn't copy $f to $inbox"; return 1; }
     log "send: $f → $inbox/$name"
-    print -r -- "$EPOCHSECONDS$SEP$inbox/$name" >>"$SENT"
+    # Size and modification time too: cleaning deletes it only if it's still exactly what was sent.
+    print -r -- "$EPOCHSECONDS$SEP$inbox/$name$SEP$(stat -f '%z:%m' "$inbox/$name")" >>"$SENT"
     remote+=("$(remote_path "$inbox/$name")")
   done
   print -rl -- $remote
