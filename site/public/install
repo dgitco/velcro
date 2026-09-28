@@ -52,6 +52,11 @@ if [ "$mode" = cli ]; then
   chmod +x "$tmp/velcro"
   # Copies itself to ~/.local/bin/velcro and starts its LaunchAgents.
   /bin/zsh "$tmp/velcro" install
+  # velcro-sha reads copies back with the cache off, so verifying a copy on a share reaches the server.
+  if [ -n "$(field sha_tool_sha256)" ]; then
+    fetch "$BASE/velcro-sha" "$tmp/velcro-sha" "$(field sha_tool_sha256)"
+    chmod +x "$tmp/velcro-sha" && mv -f "$tmp/velcro-sha" "$HOME/.local/bin/velcro-sha"
+  fi
 else
   say "velcro $version: menu bar app and command"
   fetch "$BASE/$(field zip)" "$tmp/velcro.zip" "$(field zip_sha256)"

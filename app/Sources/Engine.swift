@@ -67,6 +67,7 @@ final class Engine {
             lastRefresh = now
             Task { await store.refresh() }
         }
+        Importer.shared.followOutsideImport()
         // Mounts usually trigger these; the timer is the backstop.
         if Importer.shared.waiting > 0, now.timeIntervalSince(lastQueueTry) >= 300 {
             lastQueueTry = now

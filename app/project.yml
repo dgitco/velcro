@@ -8,7 +8,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    MARKETING_VERSION: 0.4.6
+    MARKETING_VERSION: 0.5.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: "6.0"
     SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
@@ -27,6 +27,13 @@ targets:
       # The command line tool the app runs for every share operation.
       - path: ../velcro
         buildPhase: resources
+    dependencies:
+      # Reads files with the cache off to verify copies on network shares; lands in Contents/MacOS.
+      - target: velcro-sha
+        embed: true
+        codeSign: true
+        copy:
+          destination: executables
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.dgitco.velcro.app
@@ -37,3 +44,12 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: velcro
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
         INFOPLIST_KEY_NSHumanReadableCopyright: MIT License
+  velcro-sha:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Tools/velcro-sha
+    settings:
+      base:
+        PRODUCT_NAME: velcro-sha
+        SKIP_INSTALL: YES

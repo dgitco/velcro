@@ -16,7 +16,7 @@ Do these in order. Ask before adding or changing anything, and change things onl
 
 ## If you're working on this code
 
-- `velcro` (zsh) does all the work; `app/` (SwiftUI, xcodegen) runs it for the menu bar. The version is `VERSION=` in `velcro`.
+- `velcro` (zsh) does all the work; `app/` (SwiftUI, xcodegen) runs it for the menu bar. `app/Tools/velcro-sha` is a small command that hashes a file with the cache off (F_NOCACHE); the app puts it in `Contents/MacOS` and the installer puts it next to a command-only install. Without it, reading back a copy just written to an SMB share returns cached data. The version is `VERSION=` in `velcro`.
 - Build: `scripts/build-app`. Site: `scripts/deploy-site --stage` prepares `site/public`; without `--stage` it also deploys.
 - Test with a throwaway `HOME` (`env -u XDG_CONFIG_HOME HOME=/tmp/x zsh ./velcro …`) and a disk image as a fake recorder (`hdiutil create -fs MS-DOS …`). `velcro install` and `uninstall` call the real `launchctl` and remove the real SwiftBar plugin even with a fake `HOME`, so put stub `launchctl`, `defaults`, `open`, and `osascript` first on `PATH` when testing them.
 - With `pipe_fail` on, don't `return` from inside `cmd | while …`; loop over an array instead.

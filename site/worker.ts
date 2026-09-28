@@ -1,8 +1,10 @@
-// velcro.dgit.co is static; this worker only runs for the downloads, to count them (privately, in
-// the shared D1 dgit-stats, product "velcro"). Nothing here serves the counts.
-//   latest  the installer's first request: one per `curl … /install | sh` run, installs and updates
-//   cli     the velcro command on its own
-//   zip     the app, from the installer (cli) or the Download button (browser)
+// velcro.dgit.co is static; this runs only for the install and download paths and counts them per
+// day in the shared D1 dgit-stats (product "velcro"). The counts are private: nothing serves them.
+//   latest    the installer starting (it reads /latest first), either mode
+//   cli-only  the installer fetching the bare command (--cli-only)
+//   zip       the app zip (from the installer, or a browser download)
+//   install   the installer script itself, e.g. someone reading it in a browser
+// client is "browser" for Mozilla user agents and "cli" otherwise (curl).
 
 interface D1Statement { bind(...values: unknown[]): D1Statement; run(): Promise<unknown> }
 interface Env {
@@ -15,8 +17,9 @@ const BOT = /bot|crawl|spider|slurp|preview|monitor|headless/i;
 
 function itemOf(path: string): string | null {
   if (path === "/latest") return "latest";
-  if (path === "/velcro") return "cli";
-  if (/^\/velcro-[\w.-]+\.zip$/.test(path)) return "zip";
+  if (path === "/velcro") return "cli-only";
+  if (path === "/install") return "install";
+  if (/^\/velcro-[0-9.]+\.zip$/.test(path)) return "zip";
   return null;
 }
 
@@ -25,14 +28,13 @@ export default {
     const response = await env.ASSETS.fetch(request);
     const item = itemOf(new URL(request.url).pathname);
     const ua = request.headers.get("user-agent") ?? "";
-    if (item && request.method === "GET" && response.status === 200 && !BOT.test(ua)) {
+    if (item && request.method === "GET" && response.ok && !BOT.test(ua)) {
       const client = ua.includes("Mozilla") ? "browser" : "cli";
-      const day = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
       ctx.waitUntil(
         env.STATS.prepare(
           "INSERT INTO hits (day, product, item, client, n) VALUES (?, 'velcro', ?, ?, 1) ON CONFLICT (day, product, item, client) DO UPDATE SET n = n + 1",
         )
-          .bind(day, item, client)
+          .bind(new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10), item, client)
           .run()
           .catch(() => {}),
       );

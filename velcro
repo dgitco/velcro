@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.4.6
+VERSION=0.5.0
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -173,6 +173,9 @@ cmd_status() {
     print
     print -rn -- "import  ${#regs} recorder(s) → ${dest:-(no folder yet: velcro set import.dest …)}"
     if [[ -z $dest ]]; then print; elif on_mounted_volume "$dest"; then print "  ● attached"; else print "  ○ not attached"; fi
+    local sub=$(setting import.folder) alt
+    print -r -- "        from ${sub:-the whole drive}, $(is_on import.delete && print "deleted from the recorder once verified" || print "kept on the recorder")$(is_on import.auto || print ", only with velcro import")"
+    alt=$(renamed_mount "$dest") && print -r -- "        is the share mounted as $alt? then: velcro set import.dest ${dest/#${alt%-*}/$alt}"
     (( ${#waiting} )) && print -r -- "        ${#waiting} recording(s) waiting on this Mac until that folder is attached"
   fi
   if [[ -n $inbox ]]; then
@@ -268,6 +271,7 @@ cmd_uninstall() {
   if [[ -L $BIN ]] || { [[ -f $BIN ]] && grep -q '^# velcro — keep network shares' "$BIN"; }; then
     rm -f "$BIN" && print "removed $BIN"
   fi
+  [[ -f ${BIN:h}/velcro-sha ]] && rm -f "${BIN:h}/velcro-sha"
   print "agent removed (settings kept in $CONF_DIR; delete that folder too to forget them)"
 }
 
@@ -437,7 +441,18 @@ on_mounted_volume() {
   return 1
 }
 
-# A folder ready to write into: on a mounted volume, created if needed.
+# /Volumes/home/x when "home" isn't mounted but "home-1" is: macOS renamed the share's mount point
+# (usually because a leftover /Volumes/home folder was in the way). Prints /Volumes/home-1.
+renamed_mount() {
+  [[ $1 == /Volumes/?* ]] || return 1
+  local root=/Volumes/${${1#/Volumes/}%%/*} mp
+  on_mounted_volume "$1" && return 1
+  for mp in "${(@f)$(mount_points)}"; do
+    [[ $mp == "$root"-<-> ]] && { print -r -- "$mp"; return 0; }
+  done
+  return 1
+}
+
 # On a mounted drive or share, missing folders are created. Elsewhere only the last folder is, so a
 # setting like ~/Dropbox/inbox on a Mac without Dropbox fails instead of quietly making ~/Dropbox.
 ready_dir() {
@@ -467,7 +482,15 @@ free_name() {
   print -r -- "$name"
 }
 
-sha256() { /usr/bin/openssl dgst -sha256 -r <"$1" | cut -d' ' -f1; }
+# velcro.app ships velcro-sha, which reads with the cache off: without it, reading back a copy just
+# written to a network share returns this Mac's cached data instead of what the server stored.
+SHA_TOOL=${SELF:h:h}/MacOS/velcro-sha
+[[ -x $SHA_TOOL ]] || SHA_TOOL=${SELF:h}/velcro-sha   # next to a command-line install
+sha256() {
+  if [[ -x $SHA_TOOL ]]; then "$SHA_TOOL" "$1"
+  else /usr/bin/openssl dgst -sha256 -r <"$1" | cut -d' ' -f1
+  fi
+}
 size_of() { stat -f %z "$1" 2>/dev/null; }
 now_iso() { local t=$(date +%Y-%m-%dT%H:%M:%S%z); print -r -- "${t[1,-3]}:${t[-2,-1]}"; }
 json_str() {
@@ -590,7 +613,10 @@ import_volume() {
   dest=$(folder_setting import.dest)
   [[ -n $dest ]] || { notify "Recorder $device: choose where recordings go first (velcro set import.dest <folder>)"; return 1; }
   if ready_dir "$dest"; then dir=$dest
-  elif [[ $dest == /Volumes/?* ]]; then dir=$QUEUE; mkdir -p "$QUEUE/.meta"
+  elif [[ $dest == /Volumes/?* ]]; then
+    dir=$QUEUE; mkdir -p "$QUEUE/.meta"
+    local alt; alt=$(renamed_mount "$dest") &&
+      notify "Recordings are waiting on this Mac: ${dest} isn't attached, but ${alt} is. If that's the same share, set import.dest to ${dest/#${alt%-*}/$alt}"
   else notify "Can't use $dest for recordings: ${dest:h} doesn't exist"; return 1
   fi
   log "import: ${#files} file(s) from $device → $dir"

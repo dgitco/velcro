@@ -97,6 +97,7 @@ final class Importer: ObservableObject {
             return
         }
         running = true
+        poll?.invalidate()
         poll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
             Task { @MainActor in Importer.shared.readProgress() }
         }
@@ -111,6 +112,27 @@ final class Importer: ObservableObject {
             running = false
             await refresh()
         }
+    }
+
+    /// An import started elsewhere (a terminal, or the LaunchAgent) shows its progress here too.
+    func followOutsideImport() {
+        guard !running, poll == nil, let path = store.env["IMPORT_STATUS"],
+              FileManager.default.fileExists(atPath: path) else { return }
+        poll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+            Task { @MainActor in Importer.shared.outsideTick() }
+        }
+    }
+
+    private func outsideTick() {
+        guard !running else { return }
+        guard let path = store.env["IMPORT_STATUS"], FileManager.default.fileExists(atPath: path) else {
+            poll?.invalidate()
+            poll = nil
+            progress = nil
+            Task { await refresh() }
+            return
+        }
+        readProgress()
     }
 
     func register(_ volume: Volume) {

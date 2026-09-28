@@ -17,10 +17,13 @@ cmp -s $root/velcro $root/build/velcro.app/Contents/Resources/velcro ||
 sha() { shasum -a 256 $1 | cut -d' ' -f1; }
 rm -f $pub/velcro-*.zip(N)
 cp $zip $pub/
-# The command on its own, for: install | sh -s -- --cli-only
+# The command on its own, for: install | sh -s -- --cli-only, with the no-cache SHA-256 reader
+# the app ships, so a command-line install verifies copies on shares the same way.
 cp $root/velcro $pub/velcro
+cp $root/build/velcro.app/Contents/MacOS/velcro-sha $pub/velcro-sha
 # What the installer reads to know what to fetch and which checksums to expect.
-print -l "version=$version" "zip=${zip:t}" "zip_sha256=$(sha $zip)" "cli_sha256=$(sha $root/velcro)" >$pub/latest
+print -l "version=$version" "zip=${zip:t}" "zip_sha256=$(sha $zip)" "cli_sha256=$(sha $root/velcro)" \
+  "sha_tool_sha256=$(sha $pub/velcro-sha)" >$pub/latest
 print "/download /${zip:t} 302" >$pub/_redirects
 # The version search engines see in the page's structured data.
 sed -i '' -E "s/\"softwareVersion\": *\"[^\"]*\"/\"softwareVersion\": \"$version\"/" $pub/index.html
