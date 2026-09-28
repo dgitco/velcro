@@ -16,6 +16,7 @@ Key commands: `velcro add smb://user@host/share [fallback-host ...]`, `velcro st
 ## Docs
 - [Home and install](https://velcro.dgit.co/): features, setup prompt for coding agents, FAQ
 - [README](https://github.com/dgitco/velcro#readme): full command and settings reference
+- [AGENTS.md](https://github.com/dgitco/velcro/blob/main/AGENTS.md): step-by-step setup for a coding agent
 - [Source code](https://github.com/dgitco/velcro)
 
 ## Guides

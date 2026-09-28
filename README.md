@@ -14,9 +14,14 @@ macOS drops SMB mounts whenever Wi‑Fi blips, the lid closes, or you change net
 - A menu bar app and a `velcro` command that share the same list
 - Uses the password macOS already saved in your Keychain
 
+It also does two things that don't need a NAS at all:
+
+- **[Voice recorder import](#import-from-a-voice-recorder):** plug in a USB recorder and its recordings are copied to any folder you choose, checked by SHA-256, then cleared from the recorder
+- **[Send to an inbox](#send-to-an-inbox):** save a recent screenshot or file to a folder (a share, Dropbox, Syncthing) and copy its path, even the path a server sees
+
 ## Install
 
-**Let your agent do it.** Copy the setup prompt from **[velcro.dgit.co](https://velcro.dgit.co/#install)** into Claude Code, Codex, or Cursor. It installs velcro, finds the shares you already have mounted, and asks before adding anything.
+**Let your agent do it.** Give Claude Code, Codex, or Cursor this repository (or the setup prompt from **[velcro.dgit.co](https://velcro.dgit.co/#install)**) and ask it to set up velcro. [AGENTS.md](AGENTS.md) walks it through installing, finding the shares you already have mounted, and asking where recordings and sent files should go, before it adds anything.
 
 **Or run it yourself:**
 
