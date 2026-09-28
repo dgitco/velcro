@@ -90,7 +90,7 @@ struct SendPane: View {
         Form {
             Section {
                 FolderField(title: "Inbox", key: "send.inbox", prompt: "/Volumes/home/inbox or a Dropbox folder")
-                Picker("Delete after", selection: Binding(
+                Picker("Delete sent files after", selection: Binding(
                     get: { store.setting("send.keep") },
                     set: { days in Task { await store.set("send.keep", [days]) } })) {
                     Text("1 day").tag("1")
@@ -125,7 +125,7 @@ struct SendPane: View {
                         from = ""
                         to = ""
                     }
-                    .disabled(!trimmed(from).hasPrefix("/") || !trimmed(to).hasPrefix("/"))
+                    .disabled(!(trimmed(from).hasPrefix("/") || trimmed(from).hasPrefix("~/")) || !trimmed(to).hasPrefix("/"))
                 }
             } header: {
                 Text("Paths on the server")
@@ -148,11 +148,12 @@ struct SendPane: View {
 
     /// The same longest-prefix rule as the script's remote_path.
     private func remotePath(_ path: String) -> String {
+        let path = (path as NSString).expandingTildeInPath
         var best: (from: String, to: String)?
         for map in maps {
             let parts = map.components(separatedBy: " -> ")
             guard parts.count == 2 else { continue }
-            let from = trimmed(parts[0]), to = trimmed(parts[1])
+            let from = (trimmed(parts[0]) as NSString).expandingTildeInPath, to = trimmed(parts[1])
             guard path == from || path.hasPrefix(from + "/") else { continue }
             if from.count > (best?.from.count ?? -1) { best = (from, to) }
         }

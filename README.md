@@ -85,8 +85,8 @@ velcro import                                    # or just plug it in next time
 ```
 
 - The recorder is recognized by its volume UUID (`diskutil info`), so another drive with the same name is left alone.
-- Each file is copied under a hidden name, read back from the NAS, and compared by size and SHA-256. Only when every file matches are they deleted from the recorder. A file that's already there with the same contents is skipped; a different file with the same name is saved as `name-2.WAV`.
-- If the folder is on a drive or share that isn't attached, recordings are verified into `~/Library/Application Support/velcro/import-queue` first, and move to the NAS (verified again) when it comes back.
+- Each file is copied under a hidden name, read back from the destination, and compared by size and SHA-256. Only when every file matches are they deleted from the recorder. A file that's already there with the same contents is skipped; a different file with the same name is saved as `name-2.WAV`.
+- If the folder is on a drive or share that isn't attached, recordings are verified into `~/Library/Application Support/velcro/import-queue` first, and move there (verified again) when it comes back.
 - Every import is appended to `.velcro-import.jsonl` in the folder, one JSON object per file: `file`, `size`, `sha256`, `imported_at`, `device`, `device_uuid`, `original`, `duration_s`. A server can watch it for new recordings and check the hash before using one.
 - In the menu: progress next to the icon, **Import Now**, and **Register Recorder** for a drive that's plugged in. Settings has the folder, file types, and switches for importing on plug-in and deleting after verifying.
 
@@ -101,7 +101,7 @@ velcro send screenshot.png                       # → /mnt/nas/me/inbox/screens
 velcro send                                      # whatever's on the clipboard
 ```
 
-Inbox items are deleted after 14 days (`velcro set send.keep 30`, or `0` to keep them).
+Files velcro sent are deleted after 14 days (`velcro set send.keep 30`, or `0` to keep them); anything else in the folder is never touched. The folder is created if missing, but only when its parent exists, so `~/Dropbox/inbox` on a Mac without Dropbox reports an error instead of making a stray `~/Dropbox`. Sending is always your pick in the menu or a `velcro send`; nothing is sent on its own.
 
 ## Settings
 
@@ -117,7 +117,7 @@ Inbox items are deleted after 14 days (`velcro set send.keep 30`, or `0` to keep
 | `recorder` | | `uuid:<VolumeUUID> <label>` or `name:<volume name>`, one per recorder |
 | `send.inbox` | | where sent files go |
 | `send.keep` | `14` | days before inbox items are deleted |
-| `map` | | `<path on this Mac> -> <path on the server>`, one per share |
+| `map` | | `<path on this Mac> -> <path on another machine>`; the left side may start with `~/`. Several rules: `velcro set map "<a> -> <b>" "<c> -> <d>"`, or add one with `velcro set --add map …` |
 
 ## How it works
 

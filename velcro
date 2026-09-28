@@ -5,8 +5,9 @@ emulate -L zsh
 setopt pipe_fail
 zmodload zsh/system
 zmodload zsh/zselect
+zmodload zsh/datetime
 
-VERSION=0.4.3
+VERSION=0.4.4
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -31,6 +32,8 @@ IMPORT_LABEL=$LABEL.import
 IMPORT_PLIST=$HOME/Library/LaunchAgents/$IMPORT_LABEL.plist
 MANIFEST=.velcro-import.jsonl
 CLIPS=$SUPPORT/clips
+# What `velcro send` put in the inbox, so cleaning never touches anything else there.
+SENT=$SUPPORT/sent
 
 log() { print -r -- "$(date '+%F %T') $*" >>"$LOG"; }
 
@@ -161,7 +164,7 @@ cmd_status() {
       printf '  %-26s %-22s %s\n' "$state" "$name" "$mp"
     done
   done
-  [[ -s $CONF ]] || print "no shares yet  →  velcro add smb://user@host/share"
+  [[ -s $CONF ]] || print "no shares  (add one with velcro add smb://user@host/share; not needed for import or send)"
 
   local dest=$(folder_setting import.dest) inbox=$(folder_setting send.inbox)
   local -a regs=("${(@f)$(setting_all recorder)}") waiting=("$QUEUE"/[^.]*(N.))
@@ -373,6 +376,8 @@ cmd_settings() {
 
 # velcro set <key> [value ...]: replace every line of <key>; no value goes back to the default.
 cmd_set() {
+  local append=
+  [[ $1 == --add ]] && { append=1; shift; }
   local key=$1 v line; shift 2>/dev/null
   (( ${KEYS[(Ie)$key]} )) || { print -u2 "unknown setting: $key (one of: $KEYS)"; return 2; }
   for v in "$@"; do
@@ -380,7 +385,7 @@ cmd_set() {
       import.delete|import.auto) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
       import.folder) [[ $v != /* && $v != (..|*/..|../*|*/../*) ]] || { print -u2 "import.folder is a folder on the recorder, like RECORD"; return 2; } ;;
       send.keep) [[ $v == <-> ]] || { print -u2 "send.keep is a number of days"; return 2; } ;;
-      map) [[ $v == /?*' -> '/* ]] || { print -u2 "map looks like: /Volumes/home -> /mnt/nas/me"; return 2; } ;;
+      map) [[ $v == (/|\~/)?*' -> '/* ]] || { print -u2 "map looks like: /Volumes/home -> /mnt/nas/me  (the left side may start with ~/)"; return 2; } ;;
       recorder) [[ $v == (uuid|name):?* ]] || { print -u2 "recorder is uuid:<VolumeUUID> or name:<volume name>"; return 2; } ;;
     esac
   done
@@ -388,7 +393,7 @@ cmd_set() {
   local -a kept
   if [[ -r $SETTINGS ]]; then
     while IFS= read -r line || [[ -n $line ]]; do
-      [[ $line == *=* && ${${line%%=*}//[[:space:]]/} == "$key" ]] || kept+=("$line")
+      [[ -z $append && $line == *=* && ${${line%%=*}//[[:space:]]/} == "$key" ]] || kept+=("$line")
     done <"$SETTINGS"
   else
     kept=("# velcro settings: one \"key = value\" per line. See 'velcro help'.")
@@ -430,13 +435,20 @@ on_mounted_volume() {
 }
 
 # A folder ready to write into: on a mounted volume, created if needed.
-ready_dir() { [[ -n $1 ]] && on_mounted_volume "$1" && mkdir -p "$1" 2>/dev/null; }
+# On a mounted drive or share, missing folders are created. Elsewhere only the last folder is, so a
+# setting like ~/Dropbox/inbox on a Mac without Dropbox fails instead of quietly making ~/Dropbox.
+ready_dir() {
+  [[ -n $1 ]] && on_mounted_volume "$1" || return 1
+  [[ -d $1 ]] && return 0
+  if [[ $1 == /Volumes/?* ]]; then mkdir -p "$1" 2>/dev/null; else [[ -d ${1:h} ]] && mkdir "$1" 2>/dev/null; fi
+}
 
 # How another machine sees <path>, by the longest matching "map" rule; unchanged without one.
 remote_path() {
   local p=$1 m from to best= best_to=
   setting_all map | while IFS= read -r m; do
     from=${${m%% -> *}%/} to=${${m#* -> }%/}
+    from=${from/#\~/$HOME}
     if [[ ($p == "$from" || $p == "$from"/*) && ${#from} -gt ${#best} ]]; then
       best=$from best_to=$to
     fi
@@ -574,7 +586,10 @@ import_volume() {
 
   dest=$(folder_setting import.dest)
   [[ -n $dest ]] || { notify "Recorder $device: choose where recordings go first (velcro set import.dest <folder>)"; return 1; }
-  if ready_dir "$dest"; then dir=$dest; else dir=$QUEUE; mkdir -p "$QUEUE/.meta"; fi
+  if ready_dir "$dest"; then dir=$dest
+  elif [[ $dest == /Volumes/?* ]]; then dir=$QUEUE; mkdir -p "$QUEUE/.meta"
+  else notify "Can't use $dest for recordings: ${dest:h} doesn't exist"; return 1
+  fi
   log "import: ${#files} file(s) from $device → $dir"
 
   P_I=0 P_N=${#files} P_DONE=0 P_TOTAL=0
@@ -736,11 +751,23 @@ cmd_recorder() {
 # copy the path another machine sees it at.
 
 # Delete inbox items older than send.keep days.
+# Delete what velcro itself sent more than send.keep days ago. Other files in the folder are never
+# touched: it may be a Dropbox or shared folder with things of the user's own.
 clean_inbox() {
-  local inbox=$1 keep=$(setting send.keep) old
-  [[ $keep == <1-> ]] || return 0
-  old=$(find "$inbox" -mindepth 1 -maxdepth 1 ! -name '.*' -mtime +$keep -print -exec rm -rf {} + 2>>"$LOG" | wc -l)
-  (( old )) && log "send: cleaned $(( old )) item(s) older than $keep days from $inbox"
+  local inbox=$1 keep=$(setting send.keep) line at f n=0
+  [[ $keep == <1-> && -s $SENT ]] || return 0
+  local -a kept
+  for line in "${(@f)$(<$SENT)}"; do
+    at=${line%%$SEP*} f=${line#*$SEP}
+    if [[ $at == <-> ]] && (( EPOCHSECONDS - at > keep * 86400 )) && [[ $f == "$inbox"/?* ]]; then
+      [[ -e $f ]] && rm -rf -- "$f" 2>>"$LOG" && (( n++ ))
+    else
+      kept+=("$line")
+    fi
+  done
+  if (( ${#kept} )); then print -rl -- "${kept[@]}" >"$SENT.tmp"; else : >"$SENT.tmp"; fi
+  mv -f "$SENT.tmp" "$SENT"
+  (( n )) && log "send: cleaned $n item(s) velcro sent more than $keep days ago from $inbox"
   return 0
 }
 
@@ -763,9 +790,9 @@ clipboard_file() {
 cmd_send() {
   local inbox=$(folder_setting send.inbox) f name
   local -a remote
-  mkdir -p "${LOG:h}"
+  mkdir -p "${LOG:h}" "$SUPPORT"
   [[ -n $inbox ]] || { notify "Choose an inbox folder first: velcro set send.inbox <folder>"; return 2; }
-  ready_dir "$inbox" || { notify "The inbox isn't attached: $inbox"; return 1; }
+  ready_dir "$inbox" || { notify "The inbox isn't available: $inbox (not attached, or its parent folder doesn't exist)"; return 1; }
   clean_inbox "$inbox"
   [[ $1 == --clean ]] && return 0
   if (( ! $# )); then
@@ -780,6 +807,7 @@ cmd_send() {
     cp -RX -- "$f" "$inbox/.$name.velcro-part" 2>>"$LOG" && mv -n "$inbox/.$name.velcro-part" "$inbox/$name" ||
       { rm -rf "$inbox/.$name.velcro-part"; notify "Couldn't copy $f to $inbox"; return 1; }
     log "send: $f → $inbox/$name"
+    print -r -- "$EPOCHSECONDS$SEP$inbox/$name" >>"$SENT"
     remote+=("$(remote_path "$inbox/$name")")
   done
   print -rl -- $remote
@@ -804,7 +832,7 @@ velcro $VERSION — keep network shares stuck to your Mac
   velcro import              copy recordings off a plugged-in recorder, verify, delete, eject
   velcro recorder add        register the plugged-in drive as a recorder (rm <name> to forget it)
   velcro send [file ...]     put files (or the clipboard) in your inbox folder, copy its path
-  velcro settings            show settings;  velcro set <key> [value ...] to change one
+  velcro settings            show settings;  velcro set [--add] <key> [value ...] to change one
 
 settings ($SETTINGS):
   import.dest   folder for recordings: ~/Recordings, /Volumes/home/recordings, iCloud Drive ...
@@ -814,7 +842,8 @@ settings ($SETTINGS):
   import.auto   import as soon as a recorder is plugged in (yes)
   send.inbox    folder for sent files: /Volumes/home/inbox, a Dropbox folder ...
   send.keep     days to keep inbox files (${DEFAULTS[send.keep]}; 0 keeps them)
-  map           path on another machine, e.g. "/Volumes/home -> /mnt/nas/me" (repeatable)
+  map           path on another machine, e.g. "/Volumes/home -> /mnt/nas/me". Several rules:
+                velcro set map "<a> -> <b>" "<c> -> <d>", or velcro set --add map "<c> -> <d>"
 
 config: $CONF
 EOF
