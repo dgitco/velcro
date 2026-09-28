@@ -82,7 +82,7 @@ final class Importer: ObservableObject {
         }
     }
 
-    /// Anything mounted or unmounted: maybe a recorder, maybe the NAS coming back for waiting files.
+    /// Anything mounted or unmounted: maybe a recorder, maybe the destination coming back for waiting files.
     func volumesChanged(mounted: Bool) {
         Task {
             await refresh()
@@ -156,7 +156,7 @@ final class Importer: ObservableObject {
     }
 }
 
-/// Recent images and files copied on this Mac, offered in the menu to send to the NAS inbox.
+/// Recent images and files copied on this Mac, offered in the menu to send to the inbox folder.
 /// Watching is read-only: the clipboard only changes when an item is clicked, to the sent path.
 final class Clipboard: ObservableObject {
     static let shared = Clipboard()

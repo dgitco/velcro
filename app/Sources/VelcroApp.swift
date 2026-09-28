@@ -125,7 +125,7 @@ struct ImportMenu: View {
             } else if importer.running {
                 Text("Importing…")
             } else if importer.waiting > 0 {
-                Text("\(importer.waiting) waiting on this Mac for the NAS")
+                Text("\(importer.waiting) waiting on this Mac")
             }
             if !importer.recorders.isEmpty {
                 Button("Import Now") { importer.run(auto: false) }
@@ -142,14 +142,14 @@ struct ImportMenu: View {
     }
 }
 
-/// Recent copied images and files; clicking one saves it to the NAS inbox and copies its path.
+/// Recent copied images and files; clicking one saves it to the inbox folder and copies its path.
 struct SendMenu: View {
     @ObservedObject private var clipboard = Clipboard.shared
     @ObservedObject private var store = Store.shared
 
     var body: some View {
         Divider()
-        Text("Send to NAS")
+        Text("Send to Inbox")
         if store.setting("send.inbox").isEmpty {
             Button("Set Up Inbox…") { SettingsWindow.show(tab: .send) }
         } else if clipboard.clips.isEmpty {

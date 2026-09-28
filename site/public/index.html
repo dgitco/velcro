@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>velcro: auto-reconnect SMB and NFS network shares on your Mac (free)</title>
-<meta name="description" content="Free, open-source menu bar app that keeps SMB and NFS shares mounted on macOS. Reconnects your NAS after sleep, Wi‑Fi drops, and network changes, with LAN and Tailscale fallback. Also imports USB voice recorders to a NAS.">
+<meta name="description" content="Free, open-source menu bar app that keeps SMB and NFS shares mounted on macOS. Reconnects your NAS after sleep, Wi‑Fi drops, and network changes, with LAN and Tailscale fallback. Also imports USB voice recorders to any folder, NAS or not.">
 <link rel="canonical" href="https://velcro.dgit.co/">
 <meta property="og:type" content="website">
 <meta property="og:title" content="velcro">
@@ -19,7 +19,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/style.css">
-<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "velcro", "description": "Menu bar app and command for macOS that keeps SMB and NFS network shares mounted, reconnecting after sleep, Wi-Fi drops, and network changes. Also imports USB voice recorders to a NAS and sends files to a NAS inbox.", "applicationCategory": "UtilitiesApplication", "operatingSystem": "macOS 13 or later", "softwareVersion": "0.4.1", "url": "https://velcro.dgit.co/", "downloadUrl": "https://velcro.dgit.co/download", "installUrl": "https://velcro.dgit.co/#install", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "sameAs": ["https://github.com/dgitco/velcro"], "publisher": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Why does macOS say it can't check velcro?", "acceptedAnswer": {"@type": "Answer", "text": "velcro is free and isn't notarized, which takes a paid Apple Developer membership. macOS only checks apps a browser downloaded, so installing with the curl command skips the dialog; the installer checks the download's SHA-256 instead. If you downloaded the zip, open velcro once, click Done, then click Open Anyway in System Settings › Privacy & Security. Or run xattr -dr com.apple.quarantine /Applications/velcro.app."}}, {"@type": "Question", "name": "What will macOS ask me to allow?", "acceptedAnswer": {"@type": "Answer", "text": "Notifications, to tell you when an import or a send is done, and Login Items, to start at login. The first time velcro imports or sends, macOS may ask to let it open files on a removable volume or a network volume. velcro doesn't need Full Disk Access, Accessibility, or Screen Recording."}}, {"@type": "Question", "name": "Does velcro see my passwords?", "acceptedAnswer": {"@type": "Answer", "text": "No. Share passwords stay in your keychain; macOS uses them to mount and velcro never reads them. If there's no saved password, macOS shows its own login window once. velcro keeps no tokens or keys of its own."}}, {"@type": "Question", "name": "What does it do with my clipboard?", "acceptedAnswer": {"@type": "Answer", "text": "It notices when you copy an image or a file and lists the last four in the menu. Copied images are kept in ~/Library/Application Support/velcro/clips until they drop off the list or velcro quits, and anything a password manager marks as private is skipped. velcro only writes to the clipboard when you pick something to send, and never sends anything on its own."}}, {"@type": "Question", "name": "Where does it keep things?", "acceptedAnswer": {"@type": "Answer", "text": "Shares and settings in ~/.config/velcro, the log in ~/Library/Logs/velcro.log, and recordings waiting for the NAS in ~/Library/Application Support/velcro/import-queue."}}, {"@type": "Question", "name": "How do I uninstall it?", "acceptedAnswer": {"@type": "Answer", "text": "Run velcro uninstall, then move velcro.app to the Trash. Delete ~/.config/velcro too if you want your settings gone."}}]}]</script>
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "velcro", "description": "Menu bar app and command for macOS that keeps SMB and NFS network shares mounted, reconnecting after sleep, Wi-Fi drops, and network changes. Also imports USB voice recorders to any folder (on the Mac, an external drive, iCloud Drive, or a NAS) with SHA-256 verification, and sends files to an inbox folder.", "applicationCategory": "UtilitiesApplication", "operatingSystem": "macOS 13 or later", "softwareVersion": "0.4.3", "url": "https://velcro.dgit.co/", "downloadUrl": "https://velcro.dgit.co/download", "installUrl": "https://velcro.dgit.co/#install", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "sameAs": ["https://github.com/dgitco/velcro"], "publisher": {"@type": "Organization", "name": "dgit", "url": "https://dgit.co"}}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Why does macOS say it can't check velcro?", "acceptedAnswer": {"@type": "Answer", "text": "velcro is free and isn't notarized, which takes a paid Apple Developer membership. macOS only checks apps a browser downloaded, so installing with the curl command skips the dialog; the installer checks the download's SHA-256 instead. If you downloaded the zip, open velcro once, click Done, then click Open Anyway in System Settings › Privacy & Security. Or run xattr -dr com.apple.quarantine /Applications/velcro.app."}}, {"@type": "Question", "name": "Do I need a NAS?", "acceptedAnswer": {"@type": "Answer", "text": "No. Keeping shares mounted is for people who have them, but recorder import and send work with any folder: on your Mac, on an external drive, in iCloud Drive, or one Dropbox or Syncthing keeps in sync. Set it in Settings or with velcro set; nothing in the code needs changing."}}, {"@type": "Question", "name": "What will macOS ask me to allow?", "acceptedAnswer": {"@type": "Answer", "text": "Notifications, to tell you when an import or a send is done, and Login Items, to start at login. The first time velcro imports or sends, macOS may ask to let it open files on a removable volume or a network volume. velcro doesn't need Full Disk Access, Accessibility, or Screen Recording."}}, {"@type": "Question", "name": "Does velcro see my passwords?", "acceptedAnswer": {"@type": "Answer", "text": "No. Share passwords stay in your keychain; macOS uses them to mount and velcro never reads them. If there's no saved password, macOS shows its own login window once. velcro keeps no tokens or keys of its own."}}, {"@type": "Question", "name": "What does it do with my clipboard?", "acceptedAnswer": {"@type": "Answer", "text": "It notices when you copy an image or a file and lists the last four in the menu. Copied images are kept in ~/Library/Application Support/velcro/clips until they drop off the list or velcro quits, and anything a password manager marks as private is skipped. velcro only writes to the clipboard when you pick something to send, and never sends anything on its own."}}, {"@type": "Question", "name": "Where does it keep things?", "acceptedAnswer": {"@type": "Answer", "text": "Shares and settings in ~/.config/velcro, the log in ~/Library/Logs/velcro.log, and recordings waiting for the NAS in ~/Library/Application Support/velcro/import-queue."}}, {"@type": "Question", "name": "How do I uninstall it?", "acceptedAnswer": {"@type": "Answer", "text": "Run velcro uninstall, then move velcro.app to the Trash. Delete ~/.config/velcro too if you want your settings gone."}}]}]</script>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
@@ -99,9 +99,31 @@
   <section class="section">
     <h2>Also in the menu</h2>
     <ul class="list">
-      <li><div><b>Voice recorder import</b><span>Plug in a USB recorder and velcro copies its recordings to a folder on your NAS, reads each copy back and compares its size and SHA-256, then clears the recorder and ejects it. If any file doesn't match, nothing is deleted. When the NAS is away, recordings wait on your Mac and move over once it's back.</span></div></li>
-      <li><div><b>Send to your server</b><span>Pick a recent screenshot or file and velcro saves it in your NAS inbox, then copies the path your server sees, ready to paste into a terminal over SSH. The clipboard only changes when you pick something.</span></div></li>
+      <li><div><b>Voice recorder import</b><span>Plug in a USB recorder and velcro copies its recordings to any folder you choose: on your Mac, on an external drive, in iCloud Drive, or on a NAS. It reads each copy back and compares its size and SHA-256, then clears the recorder and ejects it. If any file doesn't match, nothing is deleted. When the folder's drive or share is away, recordings wait on your Mac and move over once it's back.</span></div></li>
+      <li><div><b>Send to an inbox</b><span>Pick a recent screenshot or file and velcro saves it in an inbox folder, on a share or one Dropbox or Syncthing keeps in sync, then copies its path. Add a rule and it copies the path another machine sees instead, ready to paste into a terminal over SSH. The clipboard only changes when you pick something.</span></div></li>
     </ul>
+  </section>
+
+  <section class="section" id="setups">
+    <h2>Set it up your way</h2>
+    <p class="body">No NAS needed, and no code to change: every choice is in Settings, or one <code>velcro set</code> away.</p>
+    <ul class="list">
+      <li><div><b>No NAS</b><span>Skip shares entirely. Import recordings into <code>~/Recordings</code> or an iCloud Drive folder, and send to a Dropbox folder.</span></div></li>
+      <li><div><b>External drive</b><span>Import to <code>/Volumes/Backup/Recordings</code>. Unplugged? Recordings wait on your Mac until it's back.</span></div></li>
+      <li><div><b>NAS</b><span>Keep its shares mounted, import to a folder on one, and send to an inbox your server also mounts.</span></div></li>
+      <li><div><b>A recorder that also plays music</b><span>Only take its recordings folder (<code>import.folder RECORD</code>), so music elsewhere on it is never touched.</span></div></li>
+      <li><div><b>Keep a copy on the recorder</b><span>Turn off deleting after verifying. Files already imported are recognized by their SHA-256 and skipped.</span></div></li>
+    </ul>
+    <div class="copy-field">
+      <pre>velcro recorder add                  # recorder plugged in
+velcro set import.dest ~/Recordings
+velcro set import.folder RECORD      # optional
+velcro set import.delete no          # optional
+velcro set send.inbox ~/Dropbox/inbox
+velcro set map "/Users/me/Dropbox -> /home/me/Dropbox"
+velcro settings</pre>
+      <button class="btn-icon" type="button" data-copy aria-label="Copy" title="Copy"><svg><use href="#i-copy"/></svg></button>
+    </div>
   </section>
 
   <section class="section">
@@ -128,9 +150,9 @@ velcro send screenshot.png</pre>
    If I only want the command line: curl -fsSL https://velcro.dgit.co/install | sh -s -- --cli-only
    velcro goes in ~/.local/bin; use the full path if that isn't on PATH yet.
 2. List the shares mounted right now (mount -t smbfs; mount -t nfs) and ask which ones velcro should keep mounted. Add each with: velcro add smb://user@host/share  (spaces as %20). If I reach that server another way too, like a Tailscale name, put it after the address as a fallback host.
-3. Ask whether I want either of these, and set up only what I say yes to:
-   - Voice recorder: I plug it in, you run velcro recorder add, then velcro set import.dest &lt;a folder on one of the shares&gt;
-   - Send to NAS: velcro set send.inbox &lt;a folder on a share&gt;, and velcro set map "&lt;that share's path on this Mac&gt; -&gt; &lt;its path on my server&gt;"
+3. Ask whether I want either of these, and set up only what I say yes to. Neither needs a NAS:
+   - Voice recorder: I plug it in, you run velcro recorder add, then ask where recordings should go (a folder on this Mac like ~/Recordings, iCloud Drive, an external drive, or a share) and run velcro set import.dest &lt;folder&gt;. If the recorder keeps recordings in one folder (often RECORD), also velcro set import.folder &lt;that folder&gt;.
+   - Send to an inbox: velcro set send.inbox &lt;a folder on a share, or one Dropbox or Syncthing syncs&gt;. If another machine sees it at a different path, velcro set map "&lt;path on this Mac&gt; -&gt; &lt;path there&gt;".
 4. Finish with velcro status and tell me what's set up.
 
 Only change things with velcro commands; velcro help lists them. If macOS asks for a share's password, tell me to tick "Remember this password in my keychain".</pre>
@@ -170,6 +192,10 @@ Only change things with velcro commands; velcro help lists them. If macOS asks f
       <details>
         <summary>Why does macOS say it can't check velcro?</summary>
         <p>velcro is free and isn't notarized, which takes a paid Apple Developer membership. macOS only checks apps a browser downloaded, so installing with the <code>curl</code> command skips the dialog; the installer checks the download's SHA-256 instead. If you downloaded the zip, open velcro once, click Done, then click Open Anyway in System Settings › Privacy &amp; Security. Or run <code>xattr -dr com.apple.quarantine /Applications/velcro.app</code>.</p>
+      </details>
+      <details>
+        <summary>Do I need a NAS?</summary>
+        <p>No. Keeping shares mounted is for people who have them, but recorder import and send work with any folder: on your Mac, on an external drive, in iCloud Drive, or one Dropbox or Syncthing keeps in sync. Set it in Settings or with <code>velcro set</code>; nothing in the code needs changing.</p>
       </details>
       <details>
         <summary>What will macOS ask me to allow?</summary>

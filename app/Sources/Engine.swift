@@ -43,7 +43,7 @@ final class Engine {
             workspace.addObserver(forName: name, object: nil, queue: .main) { _ in
                 Task { @MainActor in
                     await Store.shared.refresh()
-                    // A recorder plugged in, or the NAS back for recordings waiting on this Mac.
+                    // A recorder plugged in, or the destination back for recordings waiting on this Mac.
                     Importer.shared.volumesChanged(mounted: mounted)
                 }
             }

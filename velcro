@@ -6,7 +6,7 @@ setopt pipe_fail
 zmodload zsh/system
 zmodload zsh/zselect
 
-VERSION=0.4.2
+VERSION=0.4.3
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -163,14 +163,14 @@ cmd_status() {
   done
   [[ -s $CONF ]] || print "no shares yet  →  velcro add smb://user@host/share"
 
-  local dest=$(setting import.dest) inbox=$(setting send.inbox)
+  local dest=$(folder_setting import.dest) inbox=$(folder_setting send.inbox)
   local -a regs=("${(@f)$(setting_all recorder)}") waiting=("$QUEUE"/[^.]*(N.))
   [[ -z ${regs[1]} ]] && regs=()
   if (( ${#regs} )) || [[ -n $dest ]]; then
     print
     print -rn -- "import  ${#regs} recorder(s) → ${dest:-(no folder yet: velcro set import.dest …)}"
     if [[ -z $dest ]]; then print; elif on_mounted_volume "$dest"; then print "  ● attached"; else print "  ○ not attached"; fi
-    (( ${#waiting} )) && print -r -- "        ${#waiting} recording(s) waiting on this Mac for the NAS"
+    (( ${#waiting} )) && print -r -- "        ${#waiting} recording(s) waiting on this Mac until that folder is attached"
   fi
   if [[ -n $inbox ]]; then
     (( ${#regs} )) || [[ -n $dest ]] || print
@@ -272,7 +272,7 @@ stop_agent() {
 }
 
 # Without the app, a second agent runs "velcro import --auto" whenever any volume mounts:
-# a recorder plugged in, or the NAS coming back for recordings kept on this Mac.
+# a recorder plugged in, or the destination's drive or share coming back for recordings kept on this Mac.
 # Separate from the reconnect agent so a long import never holds up reconnecting.
 install_import_agent() {
   cat >"$IMPORT_PLIST" <<EOF
@@ -323,13 +323,13 @@ cmd_env() {
 
 # ---------------------------------------------------------------------------------------------
 # Settings: ~/.config/velcro/settings, one "key = value" per line. recorder and map may repeat.
-#   import.dest   = /Volumes/home/recordings        where recordings go (a folder on a share)
+#   import.dest   = ~/Recordings                    where recordings go: any folder, on this Mac or a share
 #   import.ext    = wav mp3 m4a                     file types to take from a recorder
 #   import.folder = RECORD                          only this folder on the recorder (and below)
 #   import.delete = yes                             delete from the recorder once verified
 #   import.auto   = yes                             import as soon as a recorder is plugged in
 #   recorder      = uuid:<VolumeUUID> <label>       or name:<volume name>
-#   send.inbox    = /Volumes/home/inbox             where "velcro send" puts files
+#   send.inbox    = /Volumes/home/inbox             where "velcro send" puts files: a share, Dropbox ...
 #   send.keep     = 14                              days before the inbox is cleaned; 0 keeps all
 #   map           = /Volumes/home -> /mnt/nas/me    how another machine sees a local path
 
@@ -360,6 +360,8 @@ setting_all() {
 # The first value. (No "| head": with pipe_fail, a writer cut off early turns into a failure.)
 setting() { local -a v=("${(@f)$(setting_all "$1")}"); print -r -- "${v[1]}"; }
 is_on()   { [[ $(setting $1) == (yes|on|true|1) ]]; }
+# A folder setting, with a leading ~ meaning the home folder (Settings stores what was typed).
+folder_setting() { local p=$(setting $1); print -r -- "${p/#\~/$HOME}"; }
 
 # For velcro.app and scripts: every setting as key=value, repeated keys on their own lines.
 cmd_settings() {
@@ -570,7 +572,7 @@ import_volume() {
   files=("$root"/**/${~pat})
   (( ${#files} )) || { log "import: nothing to import on $device${sub:+ in $sub}"; return 0; }
 
-  dest=$(setting import.dest)
+  dest=$(folder_setting import.dest)
   [[ -n $dest ]] || { notify "Recorder $device: choose where recordings go first (velcro set import.dest <folder>)"; return 1; }
   if ready_dir "$dest"; then dir=$dest; else dir=$QUEUE; mkdir -p "$QUEUE/.meta"; fi
   log "import: ${#files} file(s) from $device → $dir"
@@ -607,14 +609,14 @@ import_volume() {
   local length= where= minutes
   printf -v minutes %.0f $(( total_secs / 60 ))
   if (( minutes )); then length=" ($minutes min)"; elif (( total_secs )); then length=" (under a minute)"; fi
-  [[ $dir == $QUEUE ]] && where=", kept on this Mac until the NAS is back"
+  [[ $dir == $QUEUE ]] && where=", kept on this Mac until $dest is attached"
   if diskutil eject "$mp" >/dev/null 2>>"$LOG"; then log "import: ejected $device"; else log "import: couldn't eject $mp"; fi
   notify "Imported ${#ok} recording$([[ ${#ok} == 1 ]] || print s)$length$where"
 }
 
 # Move recordings kept on this Mac to import.dest, verifying each before deleting it here.
 flush_queue() {
-  local dest=$(setting import.dest) f meta orig size sha at device uuid secs
+  local dest=$(folder_setting import.dest) f meta orig size sha at device uuid secs
   local -a files moved failed
   files=("$QUEUE"/[^.]*(N.))
   (( ${#files} )) && ready_dir "$dest" || return 0
@@ -635,7 +637,7 @@ flush_queue() {
     (( P_DONE += ${size:-0} ))
   done
   (( ${#moved} )) && notify "Moved ${#moved} recording$([[ ${#moved} == 1 ]] || print s) from this Mac to $dest"
-  (( ${#failed} )) && notify "${#failed} recording(s) are still on this Mac: they couldn't be copied to the NAS or didn't verify. See the log."
+  (( ${#failed} )) && notify "${#failed} recording(s) are still on this Mac: they couldn't be copied to $dest or didn't verify. See the log."
   return 0
 }
 
@@ -714,7 +716,7 @@ cmd_recorder() {
       uuid=${id%%$SEP*} name=${id#*$SEP}
       if [[ -n $uuid ]]; then r="uuid:$uuid ${name:-${mp:t}}"; else r="name:${name:-${mp:t}}"; fi
       cmd_set recorder $regs "$r" && print -r -- "recorder added: $r"
-      [[ -n $(setting import.dest) ]] || print "next: velcro set import.dest /Volumes/<share>/<folder>"
+      [[ -n $(setting import.dest) ]] || print "next: velcro set import.dest <folder>   (~/Recordings, or a folder on a share or drive)"
       ;;
     rm|remove)
       [[ -n $2 ]] || { print -u2 "usage: velcro recorder rm <uuid or name>"; return 2; }
@@ -730,7 +732,8 @@ cmd_recorder() {
 }
 
 # ---------------------------------------------------------------------------------------------
-# Send: put a file in the NAS inbox and copy the path another machine sees it at.
+# Send: put a file in an inbox folder (on a share, or one Dropbox or Syncthing keeps in sync) and
+# copy the path another machine sees it at.
 
 # Delete inbox items older than send.keep days.
 clean_inbox() {
@@ -758,10 +761,10 @@ clipboard_file() {
 
 # velcro send [file ...]   with no file, sends what's on the clipboard. --clean only cleans.
 cmd_send() {
-  local inbox=$(setting send.inbox) f name
+  local inbox=$(folder_setting send.inbox) f name
   local -a remote
   mkdir -p "${LOG:h}"
-  [[ -n $inbox ]] || { notify "Choose an inbox first: velcro set send.inbox /Volumes/<share>/inbox"; return 2; }
+  [[ -n $inbox ]] || { notify "Choose an inbox folder first: velcro set send.inbox <folder>"; return 2; }
   ready_dir "$inbox" || { notify "The inbox isn't attached: $inbox"; return 1; }
   clean_inbox "$inbox"
   [[ $1 == --clean ]] && return 0
@@ -800,16 +803,16 @@ velcro $VERSION — keep network shares stuck to your Mac
 
   velcro import              copy recordings off a plugged-in recorder, verify, delete, eject
   velcro recorder add        register the plugged-in drive as a recorder (rm <name> to forget it)
-  velcro send [file ...]     put files (or the clipboard) in the NAS inbox, copy the remote path
+  velcro send [file ...]     put files (or the clipboard) in your inbox folder, copy its path
   velcro settings            show settings;  velcro set <key> [value ...] to change one
 
 settings ($SETTINGS):
-  import.dest   folder for recordings, e.g. /Volumes/home/recordings
+  import.dest   folder for recordings: ~/Recordings, /Volumes/home/recordings, iCloud Drive ...
   import.ext    file types, default "${DEFAULTS[import.ext]}"
   import.folder only this folder on the recorder, e.g. RECORD (default: the whole drive)
   import.delete delete from the recorder once every copy verifies (yes)
   import.auto   import as soon as a recorder is plugged in (yes)
-  send.inbox    e.g. /Volumes/home/inbox
+  send.inbox    folder for sent files: /Volumes/home/inbox, a Dropbox folder ...
   send.keep     days to keep inbox files (${DEFAULTS[send.keep]}; 0 keeps them)
   map           path on another machine, e.g. "/Volumes/home -> /mnt/nas/me" (repeatable)
 

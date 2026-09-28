@@ -43,7 +43,7 @@ struct ImportPane: View {
             }
 
             Section {
-                FolderField(title: "Folder", key: "import.dest", prompt: "/Volumes/home/recordings")
+                FolderField(title: "Folder", key: "import.dest", prompt: "~/Recordings or /Volumes/home/recordings")
                 SettingField(title: "File types", key: "import.ext", prompt: "wav mp3 m4a")
                 SettingField(title: "Folder on the recorder", key: "import.folder", prompt: "RECORD (empty: the whole drive)")
                 Toggle("Import as soon as a recorder is plugged in", isOn: flag("import.auto"))
@@ -51,7 +51,7 @@ struct ImportPane: View {
             } header: {
                 Text("Import")
             } footer: {
-                Text("Each file is copied, read back from the folder, and compared by size and SHA-256. If any file doesn't match, nothing is deleted. When the folder's share isn't attached, recordings wait on this Mac and move over once it is. Every import is added to .velcro-import.jsonl in the folder.")
+                Text("Each file is copied, read back from the folder, and compared by size and SHA-256. If any file doesn't match, nothing is deleted. The folder can be on this Mac, an external drive, or a share. When its drive or share isn't attached, recordings wait on this Mac and move over once it is. Every import is added to .velcro-import.jsonl in the folder.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -89,7 +89,7 @@ struct SendPane: View {
     var body: some View {
         Form {
             Section {
-                FolderField(title: "Inbox", key: "send.inbox", prompt: "/Volumes/home/inbox")
+                FolderField(title: "Inbox", key: "send.inbox", prompt: "/Volumes/home/inbox or a Dropbox folder")
                 Picker("Delete after", selection: Binding(
                     get: { store.setting("send.keep") },
                     set: { days in Task { await store.set("send.keep", [days]) } })) {
@@ -100,7 +100,7 @@ struct SendPane: View {
                     Text("Never").tag("0")
                 }
             } footer: {
-                Text("Pick a recent image or file under Send to NAS in the menu: velcro saves it in the inbox and copies the path your server sees, ready to paste into a terminal over SSH. The clipboard only changes when you pick something.")
+                Text("Pick a recent image or file under Send to Inbox in the menu: velcro saves it in this folder and copies its path. Use a folder on a share or one Dropbox or Syncthing keeps in sync, and add a rule below if another machine sees it at a different path. The clipboard only changes when you pick something.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

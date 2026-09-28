@@ -54,11 +54,12 @@
 <p>If your server mounts the same NAS as your Mac (say the Mac sees <code>/Volumes/home</code> and the server sees <code>/mnt/nas/me</code>), <a href="/">velcro</a> can do it in one click:</p>
 <ol>
 <li>Copy a screenshot (Control-Shift-Command-4) or copy a file in Finder.</li>
-<li>Open the velcro menu and pick it under Send to NAS.</li>
+<li>Open the velcro menu and pick it under Send to Inbox.</li>
 <li>velcro saves it in your NAS inbox and puts the server’s path on your clipboard, like <code>/mnt/nas/me/inbox/clip-20260927-140312.png</code>.</li>
 <li>Paste that path into the agent.</li>
 </ol>
 <p>velcro only changes your clipboard when you pick something, and never sends anything on its own.</p>
+<p>No shared NAS? Any folder both machines can reach works: one Dropbox or Syncthing keeps in sync, for example. Set <code>send.inbox</code> to it on the Mac and add a <code>map</code> rule for where the server sees it.</p>
 
 <h2>Set it up</h2>
 <pre>curl -fsSL https://velcro.dgit.co/install | sh

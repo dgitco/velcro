@@ -70,24 +70,24 @@ The first mount may show the usual macOS login prompt — tick **Remember this p
 
 ## Import from a voice recorder
 
-Plug in a USB voice recorder and velcro copies its recordings to a folder on your NAS, checks every copy, then clears the recorder and ejects it.
+Plug in a USB voice recorder and velcro copies its recordings to a folder you choose, checks every copy, then clears the recorder and ejects it. The folder can be on your Mac (`~/Recordings`), an external drive, iCloud Drive, or a NAS; you don't need a NAS or any shares for this.
 
 ```sh
 velcro recorder add                              # with the recorder plugged in
-velcro set import.dest /Volumes/home/recordings  # a folder on one of your shares
+velcro set import.dest ~/Recordings             # or /Volumes/home/recordings on a share
 velcro set import.folder RECORD                  # only the recorder's recordings folder
 velcro import                                    # or just plug it in next time
 ```
 
 - The recorder is recognized by its volume UUID (`diskutil info`), so another drive with the same name is left alone.
 - Each file is copied under a hidden name, read back from the NAS, and compared by size and SHA-256. Only when every file matches are they deleted from the recorder. A file that's already there with the same contents is skipped; a different file with the same name is saved as `name-2.WAV`.
-- If the share isn't attached, recordings are verified into `~/Library/Application Support/velcro/import-queue` first, and move to the NAS (verified again) when it comes back.
+- If the folder is on a drive or share that isn't attached, recordings are verified into `~/Library/Application Support/velcro/import-queue` first, and move to the NAS (verified again) when it comes back.
 - Every import is appended to `.velcro-import.jsonl` in the folder, one JSON object per file: `file`, `size`, `sha256`, `imported_at`, `device`, `device_uuid`, `original`, `duration_s`. A server can watch it for new recordings and check the hash before using one.
 - In the menu: progress next to the icon, **Import Now**, and **Register Recorder** for a drive that's plugged in. Settings has the folder, file types, and switches for importing on plug-in and deleting after verifying.
 
-## Send to the NAS
+## Send to an inbox
 
-velcro keeps the last few images and files you copied. Pick one under **Send to NAS** in the menu and it's saved in your NAS inbox, and the path your server sees is put on the clipboard, ready to paste into a terminal over SSH. velcro never changes the clipboard on its own.
+velcro keeps the last few images and files you copied. Pick one under **Send to Inbox** in the menu and it's saved in your inbox folder, and its path is put on the clipboard. Use a folder on a share, or one Dropbox or Syncthing keeps in sync; with a `map` rule, the path is the one another machine (say, a server you use over SSH) sees. velcro never changes the clipboard on its own.
 
 ```sh
 velcro set send.inbox /Volumes/home/inbox
