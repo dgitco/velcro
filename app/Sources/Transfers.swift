@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import UserNotifications
+import UniformTypeIdentifiers
 
 /// A drive plugged into this Mac, as `velcro recorder candidates` lists it.
 struct Volume: Identifiable, Hashable {
@@ -28,8 +29,7 @@ struct Recorder: Hashable {
     }
 }
 
-/// Recordings off a USB recorder, through `velcro import`. The script copies, verifies, deletes,
-/// and ejects; this decides when to run it and shows how far along it is.
+/// Recorder imports and selected recordings, through `velcro import` with shared progress.
 final class Importer: ObservableObject {
     static let shared = Importer()
 
@@ -91,8 +91,12 @@ final class Importer: ObservableObject {
     }
 
     /// `auto` follows the "import as soon as it's plugged in" setting; Import Now doesn't.
-    func run(auto: Bool = true) {
+    func run(auto: Bool = true, files: [String] = []) {
         if running {
+            if !files.isEmpty {
+                Notifier.post("An import is already running. Try uploading these recordings again when it finishes.")
+                return
+            }
             again = true
             return
         }
@@ -102,9 +106,15 @@ final class Importer: ObservableObject {
             Task { @MainActor in Importer.shared.readProgress() }
         }
         Task {
+            var selected = files
             repeat {
                 again = false
-                Notifier.handle(await CLI.run(auto ? ["import", "--auto"] : ["import"]))
+                let args = selected.isEmpty
+                    ? (auto ? ["import", "--auto"] : ["import"])
+                    : ["import", "--files"] + selected
+                Notifier.handle(await CLI.run(args))
+                // A mount during an upload asks for an automatic pass, not another upload.
+                selected = []
             } while again
             poll?.invalidate()
             poll = nil
@@ -112,6 +122,26 @@ final class Importer: ObservableObject {
             running = false
             await refresh()
         }
+    }
+
+    func chooseRecordings() {
+        guard !running else { return }
+        guard !store.setting("import.dest").isEmpty else {
+            SettingsWindow.show(tab: .imports)
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "Upload Recordings"
+        panel.message = "Copy recordings to your import folder. Originals stay where they are."
+        panel.prompt = "Upload"
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = store.setting("import.ext").split(separator: " ")
+            .compactMap { UTType(filenameExtension: String($0).lowercased()) }
+        if #available(macOS 14, *) { NSApp.activate() }
+        else { NSApp.activate(ignoringOtherApps: true) }
+        guard panel.runModal() == .OK else { return }
+        run(files: panel.urls.map(\.path))
     }
 
     /// An import started elsewhere (a terminal, or the LaunchAgent) shows its progress here too.

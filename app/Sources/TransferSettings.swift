@@ -63,6 +63,8 @@ struct ImportPane: View {
                         Text("\(importer.waiting) waiting on this Mac").foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button("Upload Recordings…") { importer.chooseRecordings() }
+                        .disabled(importer.running || store.setting("import.dest").isEmpty)
                     Button("Import Now") { importer.run(auto: false) }
                         .disabled(importer.running || importer.recorders.isEmpty)
                 }
