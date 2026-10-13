@@ -543,18 +543,20 @@ progress() {
 # SHA-256. <want> is the hash <src> should have, when known. Sets got_name (its name in <dir>),
 # got_sha, and got_new (empty when an identical file was already there). 0 only when verified.
 put_verified() {
-  local src=$1 dir=$2 want=$3 name=${1:t} size part sum pid have
+  local src=$1 dir=$2 want=$3 name=${1:t} size part sum pid have base ext n=1
   got_name= got_sha= got_new=
   size=$(size_of "$src") || return 1
-  # Same name there already: identical means done; different means use another name.
-  if [[ -e $dir/$name ]]; then
+  # Check numbered conflicts too, so retrying an upload reuses its verified copy.
+  base=${name%.*} ext=${name:e}
+  [[ $name == .* || $base == "$name" ]] && { base=$name ext=; }
+  while [[ -e $dir/$name ]]; do
     if [[ $(size_of "$dir/$name") == $size ]]; then
       [[ -n $want ]] || { progress hashing; want=$(sha256 "$src") } || return 1
       progress verifying $size
       if [[ $(sha256 "$dir/$name") == "$want" ]]; then got_name=$name got_sha=$want; return 0; fi
     fi
-    name=$(free_name "$dir" "$name")
-  fi
+    (( n++ )); name=$base-$n${ext:+.$ext}
+  done
   # Hidden until verified, so nothing downstream picks up half a file.
   part=$dir/.$name.velcro-part sum=$(mktemp -t velcro) || return 1
   rm -f "$part"
