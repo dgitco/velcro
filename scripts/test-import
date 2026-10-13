@@ -49,6 +49,9 @@ with tempfile.TemporaryDirectory(prefix="velcro-import-") as temp:
     assert (dest / (files[0].stem + "-2.M4A")).read_bytes() == files[0].read_bytes()
     assert (dest / files[0].name).read_bytes() == b"\0" * 1024
     assert len(records(dest)) == 3
+    run("import", "--files", files[0])
+    assert len(records(dest)) == 3
+    assert not (dest / (files[0].stem + "-3.M4A")).exists()
 
     # Reject the whole selection before copying if any file is invalid.
     new = source / "new.wav"
