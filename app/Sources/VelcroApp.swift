@@ -113,15 +113,15 @@ struct MenuContent: View {
     }
 }
 
-/// Recorder section: only once there's a recorder, a drive to register, or recordings waiting.
+/// Both automatic recorder imports and manual uploads use the recording import folder.
 struct ImportMenu: View {
     @ObservedObject private var importer = Importer.shared
     @ObservedObject private var store = Store.shared
 
     var body: some View {
-        if !importer.recorders.isEmpty || !importer.candidates.isEmpty || importer.waiting > 0 {
+        if !store.setting("import.dest").isEmpty || !importer.recorders.isEmpty || !importer.candidates.isEmpty || importer.waiting > 0 {
             Divider()
-            Text("Recorder")
+            Text("Recordings")
             if let progress = importer.progress {
                 Text(progress.summary)
             } else if importer.running {
@@ -133,6 +133,8 @@ struct ImportMenu: View {
                 Button("Import Now") { importer.run(auto: false) }
                     .disabled(importer.running)
             }
+            Button("Upload Recordings…") { importer.chooseRecordings() }
+                .disabled(importer.running)
             if !importer.candidates.isEmpty {
                 Menu("Register Recorder") {
                     ForEach(importer.candidates) { volume in
@@ -140,6 +142,9 @@ struct ImportMenu: View {
                     }
                 }
             }
+        } else {
+            Divider()
+            Button("Upload Recordings…") { importer.chooseRecordings() }
         }
     }
 }
