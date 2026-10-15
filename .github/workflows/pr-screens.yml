@@ -1,0 +1,28 @@
+name: PR screens
+# A PR that touches UI files needs before/after images (or video) in its "Screens"/"화면" section,
+# or an explicit "N/A — why" / "해당 없음 — 이유". One tiny job, only when UI paths change.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+    paths:
+      - "app/**/*.swift"
+      - "site/public/**"
+permissions: {}
+jobs:
+  screens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Screens section has before/after media
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          section=$(printf '%s\n' "$BODY" | perl -0pe 's/<!--.*?-->//gs' | awk '/^## *(Screens|화면)/{f=1;next} /^## /{f=0} f')
+          if printf '%s' "$section" | grep -qiE '(https?://[^ )]+\.(png|jpe?g|gif|webp|mp4|webm|mov)|user-attachments/|<img |<video )'; then
+            echo "media found"; exit 0
+          fi
+          if printf '%s' "$section" | grep -qE '(N/A|해당 없음) *[—-] *[^ ]'; then
+            echo "marked as no UI change"; exit 0
+          fi
+          echo "::error::This PR changes UI files but the Screens (화면) section has no before/after image or video. Upload with shot-upload <file> and paste the links, or write 'N/A — why'."
+          exit 1
