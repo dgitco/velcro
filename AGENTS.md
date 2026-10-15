@@ -21,3 +21,14 @@ Do these in order. Ask before adding or changing anything, and change things onl
 - Test with a throwaway `HOME` (`env -u XDG_CONFIG_HOME HOME=/tmp/x zsh ./velcro …`) and a disk image as a fake recorder (`hdiutil create -fs MS-DOS …`). `velcro install` and `uninstall` call the real `launchctl` and remove the real SwiftBar plugin even with a fake `HOME`, so put stub `launchctl`, `defaults`, `open`, and `osascript` first on `PATH` when testing them.
 - With `pipe_fail` on, don't `return` from inside `cmd | while …`; loop over an array instead.
 - Keep personal hosts, user names, and paths out of the repository; examples use `nas.local`, `/Volumes/home`, `/mnt/nas/me`.
+
+### Development rules (shared, 2026-10-15)
+
+- **Squash merge only.** The PR title becomes the commit title on main, the PR body its message.
+- **Update a branch with `git rebase origin/main`, then `git push --force-with-lease`.** Never merge main into a branch.
+- **main is protected.** No direct pushes, force pushes or deletion, and no admin bypass merges. Every change goes through a PR.
+- **PR body: Background · Change · Screens (before/after) · Risk** ([template](.github/pull_request_template.md)). If the UI changes, attach before/after images (video for motion). **A UI change without images is not merged.** No UI change: "N/A — why".
+- Upload images and videos with `shot-upload <file>` (public R2 bucket `pr-shots`; prints the URL and markdown). Where it isn't installed, drag the file into the PR editor. Links are public: use fake data or blur anything personal.
+- **Dependent changes go in a stack with `gh stack`** (`gh stack init` → `gh stack add` → `gh stack submit`). One thing per layer; split when the non-test diff passes about 400 lines.
+- **Tests cover API contracts, permission boundaries, money/date calculations and migrations only.** No tests that pin CSS classes, copy, layout, or jsdom viewports. Tests that need a database: tenant isolation and money only.
+- **Review is done by a separate subagent, not the agent that wrote the PR** (one that doesn't know the writing conversation). Act on correctness and requirement findings only; skip taste.
