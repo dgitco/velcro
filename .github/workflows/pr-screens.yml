@@ -21,7 +21,7 @@ jobs:
           if printf '%s' "$section" | grep -qiE '(https?://[^ )]+\.(png|jpe?g|gif|webp|mp4|webm|mov)|user-attachments/|<img |<video )'; then
             echo "media found"; exit 0
           fi
-          if printf '%s' "$section" | grep -qE '(N/A|해당 없음) *[—-] *[^ ]'; then
+          if printf '%s' "$section" | grep -qE '(N/A|해당 없음) *[—–-] *[^[:space:]]'; then
             echo "marked as no UI change"; exit 0
           fi
           echo "::error::This PR changes UI files but the Screens (화면) section has no before/after image or video. Upload with shot-upload <file> and paste the links, or write 'N/A — why'."
