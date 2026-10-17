@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+# velcro-mic-host: the Linux end of velcro's mic passthrough. `velcro mic setup <host>` copies it to
+# ~/.local/bin on the server, and velcro.app runs it there over SSH while "Mac mic" is on.
+#
+# It adds a microphone named "velcro-mic" to PipeWire (the default one while it runs). When a
+# program starts recording from it, this prints "start"; when the last one stops, "stop". velcro
+# opens the Mac's microphone only between the two and sends 16 kHz mono 16-bit PCM on stdin,
+# which goes to the microphone. When SSH goes away, stdin closes and the microphone goes with it.
+#
+#   velcro-mic-host <mac>     run for the Mac named <mac> (stdout: "ready", then "start"/"stop")
+#   velcro-mic-host --check   say whether this machine can run it
+#
+# Needs python3 and PipeWire with its tools (pipewire, pw-link); Ubuntu 22.10+ and Fedora 34+
+# have both. Programs that record through ALSA or PulseAudio reach PipeWire via pipewire-alsa
+# and pipewire-pulse.
+import array
+import fcntl
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+VERSION = "3"  # velcro.app reinstalls this file when the one it ships says something else
+NODE = "velcro-mic"
+RATE = 16000  # what velcro sends: mono, 16-bit
+# PipeWire's pipe source always buffers 8192 frames, half a second at 16 kHz. That much delay
+# would cut off the end of every recording, so the FIFO runs at six times the rate (85 ms) and
+# each sample is repeated; PipeWire resamples it back down for whoever records.
+UP = 6
+
+runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+state_dir = os.path.join(runtime, "velcro-mic")
+fifo = os.path.join(state_dir, "audio")
+pidfile = os.path.join(state_dir, "pid")
+taken = os.path.join(state_dir, "taken-by")
+conf = os.path.join(state_dir, "pipewire.conf")
+
+out_lock = threading.RLock()  # the signal handler may print while the main thread holds it
+# Set between "start" and "stop". Audio that arrives outside it (the tail SSH was still carrying
+# when a recording ended) is dropped, so it never turns up at the start of the next one.
+recording = threading.Event()
+
+
+def say(line):
+    with out_lock:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+
+
+def problems():
+    found = [f"{t} not found" for t in ("pipewire", "pw-link") if not shutil.which(t)]
+    if not found and not os.path.exists(os.path.join(runtime, "pipewire-0")):
+        found.append(f"PipeWire isn't running for this user (no {runtime}/pipewire-0)")
+    return found
+
+
+def owner():
+    """The pid in the pidfile, if that process is still a velcro-mic-host."""
+    try:
+        pid = int(open(pidfile).read().split()[0])
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            args = f.read().split(b"\0")[:2]  # python3 /path/to/velcro-mic-host
+        return pid if any(os.path.basename(a) == b"velcro-mic-host" for a in args) else None
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def stop_previous(me):
+    """One Mac at a time. A Mac reconnecting can get here before its old SSH session has noticed
+    it's gone, and the newest Mac to connect wins; the one it replaced is told, so it doesn't
+    just reconnect and take the microphone back."""
+    old = owner()
+    if old is None or old == os.getpid():
+        return
+    with open(taken, "w") as f:
+        f.write(me)
+    try:
+        os.kill(old, signal.SIGTERM)
+        for _ in range(40):
+            time.sleep(0.05)
+            os.kill(old, 0)
+    except OSError:
+        pass
+    try:
+        os.unlink(taken)
+    except OSError:
+        pass
+
+
+try:  # looked up here, not in the forked child, which may only make the call
+    import ctypes
+    _prctl = ctypes.CDLL(None, use_errno=True).prctl
+except Exception:
+    _prctl = None
+
+
+def die_with_parent():
+    """Children go when this process goes, even if it's killed without a chance to clean up."""
+    if _prctl:
+        _prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+
+
+def start_source():
+    # A small PipeWire client that reads the FIFO and offers it as a microphone.
+    with open(conf, "w") as f:
+        f.write(f"""context.properties = {{ log.level = 1 }}
+context.spa-libs = {{ audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }}
+context.modules = [
+  {{ name = libpipewire-module-protocol-native }}
+  {{ name = libpipewire-module-client-node }}
+  {{ name = libpipewire-module-adapter }}
+  {{ name = libpipewire-module-pipe-tunnel
+    args = {{ tunnel.mode = source tunnel.may-pause = false pipe.filename = "{fifo}"
+      audio.format = S16LE audio.rate = {RATE * UP} audio.channels = 1 audio.position = [ MONO ]
+      stream.props = {{ node.name = {NODE} node.description = "Mac microphone (velcro)"
+        media.class = Audio/Source priority.session = 2500 priority.driver = 2500 }} }} }}
+]
+""")
+    return subprocess.Popen(["pipewire", "-c", conf], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            preexec_fn=die_with_parent)
+
+
+children = {}
+
+
+def watch(source):
+    """Follow PipeWire's links and print start/stop as recorders connect to and leave the mic.
+    `pw-link -m` reports a new link within a few milliseconds; that delay is the start of every
+    recording, so it matters."""
+    links = subprocess.Popen(["pw-link", "-m", "-o", "-l", "-I"], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                             preexec_fn=die_with_parent)
+    # Lines look like "+  45 velcro-mic:capture_MONO" (an output port; "*" when it changes) and,
+    # under it, "+  50   |->   52 arecord:input_MONO" (link 50 added; "-" when removed). A line
+    # that repeats an existing link may have no sign at all, so only "+" and "-" change anything.
+    port, active, ready = "", set(), False
+    for line in links.stdout:
+        sign, parts = line[:1], line[1:].split()
+        if "|->" in parts:
+            if port.startswith(NODE + ":") and parts[0].isdigit():
+                if sign == "+":
+                    active.add(parts[0])
+                elif sign == "-":
+                    active.discard(parts[0])
+        elif len(parts) >= 2:
+            if sign == "-" and parts[1].startswith(NODE + ":"):
+                active.clear()  # our port is gone, and every link from it with it
+            port = "" if sign == "-" else parts[1]
+            if sign != "-" and port.startswith(NODE + ":") and not ready:
+                ready = True
+                say("ready")
+        now = bool(active)
+        if now != recording.is_set():
+            if now:
+                drain()
+                # The pipe source still holds the last 8192 frames of the previous recording.
+                # Four times that makes it skip ahead to the newest 8192, which are silence.
+                write(bytes(4 * 8192 * 2))
+                recording.set()
+                say("start")
+            else:
+                recording.clear()
+                say("stop")
+        if source.poll() is not None:
+            break
+    # PipeWire went away (restarted, upgraded) or our part of it did. Close the Mac's microphone
+    # and end the session; velcro reconnects and starts over.
+    if recording.is_set():
+        recording.clear()
+        say("stop")
+    say("error PipeWire stopped")
+    finish(1)
+
+
+def finish(code):
+    source = children.get("source")
+    if source:
+        source.terminate()
+    if owner() == os.getpid():
+        try:
+            os.unlink(pidfile)
+        except OSError:
+            pass
+    os._exit(code)
+
+
+def drain():
+    """Throw away audio that arrived after the last stop, so a recording never starts with it."""
+    r = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        while os.read(r, 65536):
+            pass
+    except BlockingIOError:
+        pass
+    finally:
+        os.close(r)
+
+
+def write(data):
+    """To the FIFO, dropping audio when it's full rather than falling behind."""
+    try:
+        os.write(fifo_w, data)
+    except BlockingIOError:
+        pass
+
+
+def pump():
+    """stdin → FIFO while recording, at UP times the rate."""
+    stdin = sys.stdin.buffer.raw
+    odd = b""
+    while True:
+        data = stdin.read(65536)
+        if not data:
+            return
+        data, odd = odd + data, b""
+        if len(data) % 2:
+            data, odd = data[:-1], data[-1:]
+        if not recording.is_set():
+            continue
+        samples = array.array("h", data)
+        up = array.array("h", bytes(len(data) * UP))
+        for k in range(UP):
+            up[k::UP] = samples
+        write(up.tobytes())
+
+
+def main():
+    if sys.argv[1:] == ["--check"]:
+        p = problems()
+        print("\n".join(p) if p else f"ok velcro-mic-host {VERSION}")
+        sys.exit(1 if p else 0)
+    if len(sys.argv) > 2 or sys.argv[1:2] == ["--help"]:
+        print("usage: velcro-mic-host [--check | <name of the Mac>]", file=sys.stderr)
+        sys.exit(2)
+    me = sys.argv[1] if len(sys.argv) > 1 else "a Mac"
+    p = problems()
+    if p:
+        say("error " + "; ".join(p))
+        sys.exit(1)
+    os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    stop_previous(me)
+    with open(pidfile, "w") as f:
+        f.write(f"{os.getpid()} {me}")
+    try:
+        os.unlink(fifo)
+    except FileNotFoundError:
+        pass
+    os.mkfifo(fifo, 0o600)
+    global fifo_w
+    fifo_w = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        fcntl.fcntl(fifo_w, 1031, 1 << 20)  # F_SETPIPE_SZ: room for the silence above, and jitter
+    except OSError:
+        pass
+    source = children["source"] = start_source()
+
+    def source_ended():
+        # pw-link may have nothing to print when our client fails to start; don't wait for it.
+        source.wait()
+        if recording.is_set():
+            recording.clear()
+            say("stop")
+        say("error PipeWire stopped")
+        finish(1)
+
+    threading.Thread(target=source_ended, daemon=True).start()
+
+    def quit(signum, _):
+        try:
+            by = open(taken).read()
+            if signum == signal.SIGTERM and by != me:
+                say(f"error taken over by {by}")
+        except OSError:
+            pass
+        finish(0)
+
+    signal.signal(signal.SIGTERM, quit)
+    signal.signal(signal.SIGHUP, quit)
+    threading.Thread(target=watch, args=(source,), daemon=True).start()
+    say(f"hello {VERSION}")
+    pump()  # until SSH closes stdin
+    finish(0)
+
+
+if __name__ == "__main__":
+    main()

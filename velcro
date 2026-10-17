@@ -34,6 +34,11 @@ MANIFEST=.velcro-import.jsonl
 CLIPS=$SUPPORT/clips
 # What `velcro send` put in the inbox, so cleaning never touches anything else there.
 SENT=$SUPPORT/sent
+# Mac mic (see "velcro help"): velcro.app writes what the passthrough is doing here.
+MIC_STATUS=$SUPPORT/mic.status
+MIC_HELPER=${SELF:h}/velcro-mic-host
+# "velcro mic on" leaves this for velcro.app: use this Mac's microphone even if another Mac took over.
+MIC_TAKE=$CONF_DIR/.mic-take
 
 log() { print -r -- "$(date '+%F %T') $*" >>"$LOG"; }
 
@@ -328,7 +333,7 @@ cmd_scan() { [[ -e $PAUSE ]] && print paused || print active; scan $1; }
 # For velcro.app: the files it shares with this script.
 cmd_env() {
   print -rl -- "VERSION=$VERSION" "CONF=$CONF" "PAUSE=$PAUSE" "LOG=$LOG" "BIN=$BIN" "SELF=$SELF" \
-    "SETTINGS=$SETTINGS" "QUEUE=$QUEUE" "IMPORT_STATUS=$IMPORT_STATUS"
+    "SETTINGS=$SETTINGS" "QUEUE=$QUEUE" "IMPORT_STATUS=$IMPORT_STATUS" "MIC_STATUS=$MIC_STATUS"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -342,12 +347,18 @@ cmd_env() {
 #   send.inbox    = /Volumes/home/inbox             where "velcro send" puts files: a share, Dropbox ...
 #   send.keep     = 14                              days before the inbox is cleaned; 0 keeps all
 #   map           = /Volumes/home -> /mnt/nas/me    how another machine sees a local path
+#   mic.host      = devbox                          SSH host that gets this Mac's microphone
+#   mic.on        = no                              send it while something there records
+#   mic.warm      = 0                               seconds the mic stays open after a recording
 
-KEYS=(import.dest import.ext import.folder import.delete import.auto recorder send.inbox send.keep map)
+KEYS=(import.dest import.ext import.folder import.delete import.auto recorder send.inbox send.keep map
+  mic.host mic.on mic.warm)
 typeset -A DEFAULTS=(
   import.ext 'wav mp3 m4a aac flac wma ogg'
   import.delete yes
   import.auto yes
+  mic.on no
+  mic.warm 0
   send.keep 14
 )
 
@@ -392,6 +403,9 @@ cmd_set() {
       import.delete|import.auto) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
       import.folder) [[ $v != /* && $v != (..|*/..|../*|*/../*) ]] || { print -u2 "import.folder is a folder on the recorder, like RECORD"; return 2; } ;;
       send.keep) [[ $v == <-> ]] || { print -u2 "send.keep is a number of days"; return 2; } ;;
+      mic.on) [[ $v == (yes|no) ]] || { print -u2 "mic.on is yes or no"; return 2; } ;;
+      mic.warm) [[ $v == <-> ]] || { print -u2 "mic.warm is a number of seconds"; return 2; } ;;
+      mic.host) [[ -n $v && $v != -* && $v != *[[:space:]]* ]] || { print -u2 "mic.host is an SSH host, like devbox or me@devbox.local"; return 2; } ;;
       map) [[ $v == (/|\~/)?*' -> '/* ]] || { print -u2 "map looks like: /Volumes/home -> /mnt/nas/me  (the left side may start with ~/)"; return 2; } ;;
       recorder) [[ $v == (uuid|name):?* ]] || { print -u2 "recorder is uuid:<VolumeUUID> or name:<volume name>"; return 2; } ;;
     esac
@@ -872,6 +886,67 @@ cmd_send() {
   print -rn -- "${(F)remote}" | pbcopy
 }
 
+# ---------------------------------------------------------------------------------------------
+# Mac mic: lend this Mac's microphone to a Linux machine you use over SSH, so voice input there
+# (Claude Code's /voice, for one) hears you. velcro-mic-host on that machine adds a PipeWire
+# microphone and says when something starts and stops recording from it; velcro.app opens the
+# Mac's microphone only in between. The app does the sending; these commands set it up.
+
+mic_ssh() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$@"; }
+
+# velcro mic setup <host>: put velcro-mic-host on the machine and check it can run there.
+mic_setup() {
+  local host=$1 out
+  [[ -n $host && $host != -* && $host != *[[:space:]]* ]] || { print -u2 "usage: velcro mic setup <ssh host>"; return 2; }
+  [[ -r $MIC_HELPER ]] || { print -u2 "Mac mic needs velcro.app: curl -fsSL https://velcro.dgit.co/install | sh"; return 1; }
+  print "installing velcro-mic-host on $host …"
+  out=$(mic_ssh "$host" 'mkdir -p ~/.local/bin && cat >~/.local/bin/.velcro-mic-host.new &&
+    chmod +x ~/.local/bin/.velcro-mic-host.new && mv -f ~/.local/bin/.velcro-mic-host.new ~/.local/bin/velcro-mic-host &&
+    ~/.local/bin/velcro-mic-host --check' <"$MIC_HELPER" 2>&1)
+  local rc=$?
+  print -r -- "$out"
+  if (( rc )); then
+    [[ $out == *"Permission denied"* || $out == *"Could not resolve"* || $out == *"timed out"* ]] &&
+      print -u2 "velcro needs 'ssh $host' to work without a password prompt (an SSH key)."
+    return 1
+  fi
+  cmd_set mic.host "$host" && log "mic: set up on $host"
+}
+
+cmd_mic() {
+  local host=$(setting mic.host)
+  case ${1:-status} in
+    setup) mic_setup "$2" ;;
+    on)
+      if [[ -n $2 ]]; then mic_setup "$2" || return; host=$2
+      elif [[ -z $host ]]; then print -u2 "Which machine? velcro mic on <ssh host>"; return 2
+      fi
+      cmd_set mic.on yes || return
+      : >"$MIC_TAKE"
+      print "Mac mic on for $host: the microphone opens only while something there records."
+      pgrep -xq velcro || print "velcro.app sends it; open velcro.app (it isn't running)."
+      ;;
+    off) cmd_set mic.on no && print "Mac mic off" ;;
+    remove)
+      [[ -n $host ]] || { print "Mac mic isn't set up"; return 0; }
+      cmd_set mic.on no
+      mic_ssh "$host" 'rm -f ~/.local/bin/velcro-mic-host' && print "removed velcro-mic-host from $host"
+      cmd_set mic.host
+      ;;
+    status)
+      if [[ -z $host ]]; then print "Mac mic: not set up (velcro mic setup <ssh host>)"; return 0; fi
+      local s=; [[ -r $MIC_STATUS ]] && s=$(<"$MIC_STATUS")
+      if is_on mic.on; then
+        pgrep -xq velcro || s="velcro.app isn't running"
+        print -r -- "Mac mic → $host: on${s:+ ($s)}"
+      else
+        print -r -- "Mac mic → $host: off"
+      fi
+      ;;
+    *) print -u2 "usage: velcro mic [status | setup <host> | on [<host>] | off | remove]"; return 2 ;;
+  esac
+}
+
 cmd_help() {
   cat <<EOF
 velcro $VERSION — keep network shares stuck to your Mac
@@ -889,6 +964,9 @@ velcro $VERSION — keep network shares stuck to your Mac
   velcro import              copy recordings off a plugged-in recorder, verify, delete, eject
   velcro recorder add        register the plugged-in drive as a recorder (rm <name> to forget it)
   velcro send [file ...]     put files (or the clipboard) in your inbox folder, copy its path
+  velcro mic on <ssh host>   lend this Mac's microphone to a Linux machine you SSH into, for voice
+                             input there (Claude Code /voice); open only while it records
+  velcro mic off | status | remove
   velcro settings            show settings;  velcro set [--add] <key> [value ...] to change one
 
 settings ($SETTINGS):
@@ -901,6 +979,10 @@ settings ($SETTINGS):
   send.keep     days to keep inbox files (${DEFAULTS[send.keep]}; 0 keeps them)
   map           path on another machine, e.g. "/Volumes/home -> /mnt/nas/me". Several rules:
                 velcro set map "<a> -> <b>" "<c> -> <d>", or velcro set --add map "<c> -> <d>"
+  mic.host      the SSH host that gets the microphone (velcro mic setup <host> sets it)
+  mic.on        yes while lending it (no)
+  mic.warm      seconds the microphone stays open after a recording, so the next one starts
+                at once (0)
 
 config: $CONF
 EOF
@@ -921,6 +1003,7 @@ case ${1:-help} in
   import)      shift; cmd_import "$@" ;;
   recorder|recorders) shift; cmd_recorder "$@" ;;
   send)        shift; cmd_send "$@" ;;
+  mic)         shift; cmd_mic "$@" ;;
   settings)    cmd_settings ;;
   set)         shift; cmd_set "$@" ;;
   version|-v|--version) print "velcro $VERSION" ;;
