@@ -83,6 +83,7 @@ velcro set import.folder RECORD                  # optional: only its recordings
 velcro set import.delete no                      # optional: keep recordings on the recorder
 velcro set import.dest ~/Recordings             # last: importing starts once this is set
 velcro import                                    # or just plug it in next time
+velcro import --files meeting.m4a interview.wav    # manually upload files; keep the originals
 ```
 
 - The recorder is recognized by its volume UUID (`diskutil info`), so another drive with the same name is left alone.
@@ -90,6 +91,7 @@ velcro import                                    # or just plug it in next time
 - If the folder is on a drive or share that isn't attached, recordings are verified into `~/Library/Application Support/velcro/import-queue` first, and move there (verified again) when it comes back.
 - Every import is appended to `.velcro-import.jsonl` in the folder, one JSON object per file: `file`, `size`, `sha256`, `imported_at`, `device`, `device_uuid`, `original`, `duration_s`. A server can watch it for new recordings and check the hash before using one.
 - In the menu: progress next to the icon, **Import Now**, and **Register Recorder** for a drive that's plugged in. Settings has the folder, file types, and switches for importing on plug-in and deleting after verifying.
+- **Upload Recordings…** in the menu or Settings lets you select recordings from any folder, without a registered recorder. It uses the same import folder, verification, offline queue and manifest as automatic recorder imports. Selected originals are always kept, even with `import.delete` on; no drive is ejected. `velcro import --files <file ...>` does the same from the command line.
 
 ## Send to an inbox
 

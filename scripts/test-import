@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Exercise the real CLI with isolated settings; never install a LaunchAgent."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+CLI = Path(__file__).resolve().parents[1] / "velcro"
+
+with tempfile.TemporaryDirectory(prefix="velcro-import-") as temp:
+    root = Path(temp)
+    env = dict(os.environ, HOME=temp, VELCRO_APP="1")
+    env.pop("XDG_CONFIG_HOME", None)
+
+    def run(*args, code=0):
+        result = subprocess.run(["/bin/zsh", str(CLI), *map(str, args)],
+                                env=env, capture_output=True, text=True)
+        assert result.returncode == code, (args, result.returncode, result.stdout, result.stderr)
+        return result.stdout
+
+    def records(dest):
+        return [json.loads(line) for line in (dest / ".velcro-import.jsonl").read_text().splitlines()]
+
+    # Manual uploads ignore recorder-only folder/delete/auto settings and preserve originals.
+    source = root / "Downloads"
+    source.mkdir()
+    files = [source / '녹음 "test".M4A', source / "meeting two.wav"]
+    for i, file in enumerate(files):
+        file.write_bytes(bytes([i]) * 1024)
+    dest = root / "recordings"
+    run("set", "import.folder", "RECORD")
+    run("set", "import.auto", "no")
+    run("set", "import.dest", dest)
+    run("import", "--files", *files)
+    rows = records(dest)
+    assert len(rows) == 2
+    for row, file in zip(rows, files):
+        assert file.exists() and (dest / file.name).read_bytes() == file.read_bytes()
+        assert row["sha256"] == hashlib.sha256(file.read_bytes()).hexdigest()
+        assert row["device"] == "Manual upload" and row["device_uuid"] == ""
+    run("import", "--files", *files)
+    assert records(dest) == rows
+
+    # A changed recording of the same size must not be skipped by recorder metadata.
+    files[0].write_bytes(b"x" * 1024)
+    run("import", "--files", files[0])
+    assert (dest / (files[0].stem + "-2.M4A")).read_bytes() == files[0].read_bytes()
+    assert (dest / files[0].name).read_bytes() == b"\0" * 1024
+    assert len(records(dest)) == 3
+    run("import", "--files", files[0])
+    assert len(records(dest)) == 3
+    assert not (dest / (files[0].stem + "-3.M4A")).exists()
+
+    # Reject the whole selection before copying if any file is invalid.
+    new = source / "new.wav"
+    new.write_bytes(b"new")
+    invalid = source / "notes.txt"
+    invalid.write_text("leave alone")
+    run("import", "--files", new, invalid, code=2)
+    run("import", "--files", new, source / "missing.wav", code=2)
+    run("import", "--files", code=2)
+    run("import", "--auto", "--files", new, code=2)
+    assert not (dest / new.name).exists()
+
+    # A busy import reports failure instead of silently dropping the selected paths.
+    lock = root / ".config/velcro/.import.lock"
+    holder = subprocess.Popen(["/bin/zsh", "-c",
+        'zmodload zsh/system; zsystem flock -f fd "$1"; print ready; read answer',
+        "lock", str(lock)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "ready"
+        assert "already running" in run("import", "--files", new, code=1)
+        assert not (dest / new.name).exists()
+    finally:
+        holder.communicate("done\n", timeout=5)
+
+    # An absent volume uses the existing queue, then an automatic pass flushes it.
+    missing_volume = Path("/Volumes") / ("velcro-test-" + root.name) / "recordings"
+    run("set", "import.dest", missing_volume)
+    run("import", "--files", new)
+    queue = root / "Library/Application Support/velcro/import-queue"
+    assert new.exists() and (queue / new.name).read_bytes() == new.read_bytes()
+    assert (queue / ".meta" / new.name).exists() and not missing_volume.exists()
+    run("set", "import.dest", dest)
+    run("import", "--auto")
+    assert not (queue / new.name).exists() and (dest / new.name).read_bytes() == new.read_bytes()
+    assert records(dest)[-1]["device"] == "Manual upload"
+
+    # A failed manifest write leaves queued audio and metadata available for retry.
+    run("set", "import.dest", missing_volume)
+    queued = source / "retry.wav"
+    queued.write_bytes(b"retry")
+    run("import", "--files", queued)
+    blocked = root / "blocked"
+    blocked.mkdir()
+    (blocked / ".velcro-import.jsonl").mkdir()
+    run("set", "import.dest", blocked)
+    run("import", "--auto")
+    assert (queue / queued.name).exists() and (queue / ".meta" / queued.name).exists()
+    run("import", "--files", queued, code=1)
+    assert queued.exists()
+
+print("PASS: manual import, hashes, originals, duplicates, conflicts, validation, lock, queue and retry")

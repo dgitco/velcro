@@ -543,18 +543,20 @@ progress() {
 # SHA-256. <want> is the hash <src> should have, when known. Sets got_name (its name in <dir>),
 # got_sha, and got_new (empty when an identical file was already there). 0 only when verified.
 put_verified() {
-  local src=$1 dir=$2 want=$3 name=${1:t} size part sum pid have
+  local src=$1 dir=$2 want=$3 name=${1:t} size part sum pid have base ext n=1
   got_name= got_sha= got_new=
   size=$(size_of "$src") || return 1
-  # Same name there already: identical means done; different means use another name.
-  if [[ -e $dir/$name ]]; then
+  # Check numbered conflicts too, so retrying an upload reuses its verified copy.
+  base=${name%.*} ext=${name:e}
+  [[ $name == .* || $base == "$name" ]] && { base=$name ext=; }
+  while [[ -e $dir/$name ]]; do
     if [[ $(size_of "$dir/$name") == $size ]]; then
       [[ -n $want ]] || { progress hashing; want=$(sha256 "$src") } || return 1
       progress verifying $size
       if [[ $(sha256 "$dir/$name") == "$want" ]]; then got_name=$name got_sha=$want; return 0; fi
     fi
-    name=$(free_name "$dir" "$name")
-  fi
+    (( n++ )); name=$base-$n${ext:+.$ext}
+  done
   # Hidden until verified, so nothing downstream picks up half a file.
   part=$dir/.$name.velcro-part sum=$(mktemp -t velcro) || return 1
   rm -f "$part"
@@ -592,9 +594,8 @@ duration() { afinfo "$1" 2>/dev/null | awk '/estimated duration/ { printf "%.1f"
 # Import every recording on the recorder at <mount point>.
 import_volume() {
   setopt local_options extended_glob
-  local mp=$1 id uuid device dest dir f secs pat
-  local -a files ok failed exts
-  local -F total_secs=0
+  local mp=$1 id uuid device pat
+  local -a files exts
   id=$(volume_id "$mp"); uuid=${id%%$SEP*} device=${id#*$SEP}; device=${device:-${mp:t}}
   exts=(${(s: :)${(L)$(setting import.ext)//[^a-z0-9 ]/}})
   (( ${#exts} )) || { notify "No file types to import (velcro set import.ext wav mp3)"; return 1; }
@@ -610,8 +611,32 @@ import_volume() {
   files=("$root"/**/${~pat})
   (( ${#files} )) || { log "import: nothing to import on $device${sub:+ in $sub}"; return 0; }
 
+  import_recordings "$device" "$uuid" "$mp" "${files[@]}"
+}
+
+# Selected files use the recorder's copy, queue and manifest path, but keep their originals.
+import_files() {
+  local f
+  local -a exts=(${(s: :)${(L)$(setting import.ext)//[^a-z0-9 ]/}}) files
+  (( $# )) || { notify "Choose recordings: velcro import --files <file ...>"; return 2; }
+  for f in "$@"; do
+    [[ -f $f && -r $f ]] || { notify "Can't read recording: $f"; return 2; }
+    (( ${exts[(Ie)${(L)f:e}]} )) || { notify "Not a configured recording file type: $f"; return 2; }
+    files+=("${f:A}")
+  done
+  import_recordings "Manual upload" "" "" "${files[@]}"
+}
+
+# An empty mount point means manual upload: never delete or eject the source.
+import_recordings() {
+  local device=$1 uuid=$2 mp=$3
+  shift 3
+  local -a files=("$@") ok failed
+  local dest dir f secs
+  local -F total_secs=0
+
   dest=$(folder_setting import.dest)
-  [[ -n $dest ]] || { notify "Recorder $device: choose where recordings go first (velcro set import.dest <folder>)"; return 1; }
+  [[ -n $dest ]] || { notify "Choose where recordings go first (velcro set import.dest <folder>)"; return 1; }
   if ready_dir "$dest"; then dir=$dest
   elif [[ $dest == /Volumes/?* ]]; then
     dir=$QUEUE; mkdir -p "$QUEUE/.meta"
@@ -622,14 +647,14 @@ import_volume() {
   log "import: ${#files} file(s) from $device → $dir"
 
   local keep_on_recorder= copied=0
-  is_on import.delete || keep_on_recorder=1
+  [[ -n $mp ]] && is_on import.delete || keep_on_recorder=1
   P_I=0 P_N=${#files} P_DONE=0 P_TOTAL=0
   for f in $files; do (( P_TOTAL += $(size_of "$f") )); done
   for f in $files; do
     (( P_I++ )); P_NAME=${f:t}
     # Files kept on the recorder come back on every plug-in. Once the manifest lists one from this
     # recorder at this size, skip it without re-reading, even if it was moved out of the folder.
-    if [[ -n $keep_on_recorder && $dir != $QUEUE && -f $dir/$MANIFEST ]] &&
+    if [[ -n $mp && -n $keep_on_recorder && $dir != $QUEUE && -f $dir/$MANIFEST ]] &&
        grep -F "\"size\":$(size_of "$f")," "$dir/$MANIFEST" | grep -qF "\"device_uuid\":$(json_str $uuid),\"original\":$(json_str ${f:t})"; then
       (( P_DONE += $(size_of "$f") ))
       continue
@@ -637,7 +662,6 @@ import_volume() {
     secs=$(duration "$f")
     if put_verified "$f" "$dir"; then
       [[ -n $got_new ]] && (( copied++ ))
-      ok+=("$f"); (( total_secs += ${secs:-0} ))
       if [[ $dir == $QUEUE ]]; then
         # Remember what manifest_add needs for when the file moves on to import.dest.
         [[ -e $QUEUE/.meta/$got_name ]] ||
@@ -645,6 +669,11 @@ import_volume() {
       else
         manifest_add "$dir" "$got_name" "${f:t}" "$(size_of "$f")" "$got_sha" "$(now_iso)" "$device" "$uuid" "$secs"
       fi
+      if (( $? )); then
+        failed+=("$f")
+        continue
+      fi
+      ok+=("$f"); (( total_secs += ${secs:-0} ))
       [[ -n $got_new ]] && log "import: $f → $dir/$got_name ($got_sha)" || log "import: $f already in $dir"
     else
       failed+=("$f")
@@ -653,15 +682,16 @@ import_volume() {
   done
 
   if (( ${#failed} )); then
-    notify "Recorder $device: ${#failed} of ${#files} recordings couldn't be copied or didn't verify. Nothing was deleted from the recorder; see the log."
+    notify "$device: ${#failed} of ${#files} recordings couldn't be copied, verified or registered. No originals were deleted; see the log."
     return 1
   fi
   # Nothing new and nothing to delete: leave the recorder mounted, say nothing.
   if [[ -n $keep_on_recorder ]] && (( copied == 0 )); then
     log "import: nothing new on $device"
+    [[ -n $mp ]] || notify "Selected recordings are already imported"
     return 0
   fi
-  if is_on import.delete; then
+  if [[ -n $mp ]] && is_on import.delete; then
     for f in $ok; do rm -f -- "$f" "${f:h}/._${f:t}" || { notify "Couldn't delete $f from the recorder"; return 1; }; done
     log "import: deleted ${#ok} verified file(s) from $device"
   fi
@@ -669,7 +699,9 @@ import_volume() {
   printf -v minutes %.0f $(( total_secs / 60 ))
   if (( minutes )); then length=" ($minutes min)"; elif (( total_secs )); then length=" (under a minute)"; fi
   [[ $dir == $QUEUE ]] && where=", kept on this Mac until $dest is attached"
-  if diskutil eject "$mp" >/dev/null 2>>"$LOG"; then log "import: ejected $device"; else log "import: couldn't eject $mp"; fi
+  if [[ -n $mp ]]; then
+    if diskutil eject "$mp" >/dev/null 2>>"$LOG"; then log "import: ejected $device"; else log "import: couldn't eject $mp"; fi
+  fi
   local n=${#ok}; [[ -n $keep_on_recorder ]] && n=$copied
   notify "Imported $n recording$([[ $n == 1 ]] || print s)$length$where"
 }
@@ -687,8 +719,8 @@ flush_queue() {
     orig=${f:t} size= sha= at=$(now_iso) device= uuid= secs=
     meta=$QUEUE/.meta/${f:t}
     [[ -r $meta ]] && IFS=$SEP read -r orig size sha at device uuid secs <"$meta"
-    if put_verified "$f" "$dest" "$sha"; then
-      manifest_add "$dest" "$got_name" "$orig" "$(size_of "$f")" "$got_sha" "$at" "$device" "$uuid" "$secs"
+    if put_verified "$f" "$dest" "$sha" &&
+       manifest_add "$dest" "$got_name" "$orig" "$(size_of "$f")" "$got_sha" "$at" "$device" "$uuid" "$secs"; then
       log "import: moved $f → $dest/$got_name"
       rm -f -- "$f" "$meta"; moved+=("$f")
     else
@@ -701,10 +733,14 @@ flush_queue() {
   return 0
 }
 
-# velcro import [--auto] [mount point ...]
+# velcro import [--auto] [mount point ...] | --files <file ...>
 cmd_import() {
-  local auto= mp round
+  local auto= selected= mp round result=0
   [[ $1 == --auto ]] && { auto=1; shift; }
+  [[ $1 == --files ]] && { selected=1; shift; }
+  if [[ -n $selected ]]; then
+    [[ -z $auto && $# -gt 0 ]] || { notify "Usage: velcro import --files <file ...>"; return 2; }
+  fi
   # Quick exit for the LaunchAgent, which runs this on every mount of anything.
   local -a waiting=("$QUEUE"/[^.]*(N.[1]))
   [[ -n $auto && $# == 0 && -z $(setting recorder) && ${#waiting} == 0 ]] && return 0
@@ -714,6 +750,10 @@ cmd_import() {
   local lockfd
   : >>"$IMPORT_LOCK"
   if ! zsystem flock -t 0 -f lockfd "$IMPORT_LOCK" 2>/dev/null; then
+    if [[ -n $selected ]]; then
+      notify "An import is already running. Try uploading these recordings again when it finishes."
+      return 1
+    fi
     : >"$IMPORT_AGAIN"
     print "an import is already running"
     return 0
@@ -722,7 +762,9 @@ cmd_import() {
   local -a vols
   for round in 1 2 3; do
     rm -f "$IMPORT_AGAIN"
-    if [[ -z $auto ]] || is_on import.auto; then
+    if [[ -n $selected ]]; then
+      if (( round == 1 )); then import_files "$@" || result=$?; fi
+    elif [[ -z $auto ]] || is_on import.auto; then
       if (( $# )); then vols=("$@"); else vols=("${(@f)$(local_volumes)}"); fi
       for mp in $vols; do
         [[ -n $mp ]] || continue
@@ -737,6 +779,7 @@ cmd_import() {
     [[ -e $IMPORT_AGAIN ]] || break
   done
   rm -f "$IMPORT_STATUS"
+  return $result
 }
 
 # velcro recorder [add [mount point] | rm <uuid|name> | candidates]
@@ -887,6 +930,7 @@ velcro $VERSION — keep network shares stuck to your Mac
   velcro logs [n]
 
   velcro import              copy recordings off a plugged-in recorder, verify, delete, eject
+  velcro import --files <file ...>  upload selected recordings to import.dest; keep originals
   velcro recorder add        register the plugged-in drive as a recorder (rm <name> to forget it)
   velcro send [file ...]     put files (or the clipboard) in your inbox folder, copy its path
   velcro settings            show settings;  velcro set [--add] <key> [value ...] to change one
