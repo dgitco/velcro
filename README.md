@@ -18,6 +18,7 @@ It also does two things that don't need a NAS at all:
 
 - **[Voice recorder import](#import-from-a-voice-recorder):** plug in a USB recorder and its recordings are copied to any folder you choose, checked by SHA-256, then cleared from the recorder
 - **[Send to an inbox](#send-to-an-inbox):** save a recent screenshot or file to a folder (a share, Dropbox, Syncthing) and copy its path, even the path a server sees
+- **[Mac mic](#lend-your-macs-microphone-to-a-server):** lend your Mac's microphone to a Linux machine you use over SSH, so voice input there (Claude Code's `/voice`) hears you; it's open only while something there records
 
 ## Install
 
@@ -104,6 +105,26 @@ velcro send                                      # whatever's on the clipboard
 
 Files velcro sent are deleted after 14 days (`velcro set send.keep 30`, or `0` to keep them); anything else in the folder is never touched. The folder is created if missing, but only when its parent exists, so `~/Dropbox/inbox` on a Mac without Dropbox reports an error instead of making a stray `~/Dropbox`. Sending is always your pick in the menu or a `velcro send`; nothing is sent on its own.
 
+## Lend your Mac's microphone to a server
+
+If you run Claude Code (or anything else that listens) on a Linux machine over SSH, its voice input can't hear you: the microphone is on your Mac. velcro can lend it.
+
+```sh
+velcro mic on devbox      # any host `ssh devbox` reaches without a password prompt
+velcro mic                # Mac mic → devbox: on (ready on devbox)
+velcro mic off
+```
+
+`velcro mic on <host>` copies a small helper, `velcro-mic-host`, to `~/.local/bin` there and checks it can run. While Mac Mic is on, velcro.app keeps one SSH session open to it. The helper adds a microphone named **velcro-mic** to PipeWire (the default one while it's connected) and tells velcro when something starts and stops recording from it. Your Mac's microphone is open only in between, so the orange dot comes and goes with each recording, and the sound goes down the same SSH session as 16 kHz mono. In Claude Code, run `/voice` there and hold Space as usual; set the dictation language in `/config`.
+
+- The server needs PipeWire with `pipewire-alsa` or `pipewire-pulse` (Ubuntu 22.10+, Fedora 34+, most desktops) and `python3`. It works even with no sound card.
+- A recording starts hearing you about 0.2–0.3 s after it begins. `velcro set mic.warm 10` keeps the microphone open 10 s after each recording, so the next one starts at once.
+- The connection comes back on its own after sleep or a dropped network. When it's off or away, the server has no velcro-mic and behaves as before.
+- velcro.app does the sending and asks once for the microphone. A command-only install can't lend it.
+- If you picked a default microphone on the server yourself, WirePlumber keeps it: choose velcro-mic there (`wpctl set-default`), or voice input keeps using the other one. Something that records from the default microphone all the time, like an echo-cancel filter, keeps your Mac's open too; `velcro mic` then says "listening".
+- Only one Mac lends its microphone to a server at a time. Turning it on on a second Mac takes over; the first shows **Use This Mac's Microphone** to take it back.
+- `velcro mic remove` deletes the helper from the server and forgets the host.
+
 ## Settings
 
 `velcro settings` shows them all; `velcro set <key> [value ...]` changes one, and `velcro set <key>` puts the default back. They're kept in `~/.config/velcro/settings`:
@@ -119,6 +140,9 @@ Files velcro sent are deleted after 14 days (`velcro set send.keep 30`, or `0` t
 | `send.inbox` | | where sent files go |
 | `send.keep` | `14` | days before inbox items are deleted |
 | `map` | | `<path on this Mac> -> <path on another machine>`; the left side may start with `~/`. Several rules: `velcro set map "<a> -> <b>" "<c> -> <d>"`, or add one with `velcro set --add map …` |
+| `mic.host` | | SSH host that gets the microphone; `velcro mic setup <host>` sets it |
+| `mic.on` | `no` | lend the microphone (`velcro mic on`/`off`) |
+| `mic.warm` | `0` | seconds the microphone stays open after a recording |
 
 ## How it works
 
@@ -144,7 +168,7 @@ velcro.app runs that pass itself when the network changes, when the Mac wakes, a
 
 **Why does macOS say it can't check velcro?** velcro isn't notarized: that takes a paid Apple Developer membership, and velcro is free. macOS only checks apps a browser downloaded, so the `curl` installer skips the dialog and checks the SHA-256 instead. With the zip, open velcro once, click Done, then click **Open Anyway** in System Settings › Privacy & Security, or run `xattr -dr com.apple.quarantine /Applications/velcro.app`.
 
-**What will macOS ask me to allow?** Notifications (import and send results) and Login Items (start at login). The first import or send may ask to open files on a removable or network volume. No Full Disk Access, Accessibility, or Screen Recording.
+**What will macOS ask me to allow?** Notifications (import and send results) and Login Items (start at login). The first import or send may ask to open files on a removable or network volume. Turning on Mac Mic asks for the microphone. No Full Disk Access, Accessibility, or Screen Recording.
 
 **Does velcro see my passwords?** No. Share passwords stay in your keychain and macOS uses them to mount. velcro has no tokens or keys of its own.
 

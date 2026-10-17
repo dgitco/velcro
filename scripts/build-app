@@ -27,7 +27,9 @@ mkdir -p $out
 ditto build/dd/Build/Products/Release/velcro.app $app
 
 if [[ -n $SIGN_IDENTITY ]]; then
-  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" $app
+  # The microphone entitlement (Mac Mic), without the debugging one an ad-hoc build carries.
+  codesign --force --options runtime --timestamp --entitlements $root/app/velcro.entitlements \
+    --sign "$SIGN_IDENTITY" $app
 fi
 codesign --verify --strict $app
 
