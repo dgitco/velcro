@@ -147,6 +147,8 @@ def watch(source):
                 elif sign == "-":
                     active.discard(parts[0])
         elif len(parts) >= 2:
+            if sign == "-" and parts[1].startswith(NODE + ":"):
+                active.clear()  # our port is gone, and every link from it with it
             port = "" if sign == "-" else parts[1]
             if sign != "-" and port.startswith(NODE + ":") and not ready:
                 ready = True
@@ -255,6 +257,17 @@ def main():
     except OSError:
         pass
     source = children["source"] = start_source()
+
+    def source_ended():
+        # pw-link may have nothing to print when our client fails to start; don't wait for it.
+        source.wait()
+        if recording.is_set():
+            recording.clear()
+            say("stop")
+        say("error PipeWire stopped")
+        finish(1)
+
+    threading.Thread(target=source_ended, daemon=True).start()
 
     def quit(signum, _):
         try:
