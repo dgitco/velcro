@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         UNUserNotificationCenter.current().delegate = self
         Engine.shared.start()
         Clipboard.shared.start()
+        Mic.shared.start()
         Task {
             await Store.shared.loadEnv()
             await Store.shared.loadSettings()
@@ -88,6 +89,7 @@ struct MenuContent: View {
 
         ImportMenu()
         SendMenu()
+        MicMenu()
 
         Divider()
         if store.paused {
@@ -162,6 +164,26 @@ struct SendMenu: View {
                 .labelStyle(.titleAndIcon)
                 .disabled(clipboard.sending)
             }
+        }
+    }
+}
+
+/// Mac mic section: only once `velcro mic setup <host>` has picked a machine.
+struct MicMenu: View {
+    @ObservedObject private var mic = Mic.shared
+    @ObservedObject private var store = Store.shared
+
+    var body: some View {
+        if !mic.host.isEmpty {
+            Divider()
+            Text("Mac Mic → \(mic.host)")
+            if mic.state != .off {
+                Text(mic.summary.prefix(1).uppercased() + mic.summary.dropFirst())
+            }
+            if mic.replaced {
+                Button("Use This Mac's Microphone") { mic.takeOver() }
+            }
+            Button(mic.state == .off ? "Lend Microphone" : "Stop Lending Microphone") { mic.toggle() }
         }
     }
 }

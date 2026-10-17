@@ -8,7 +8,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    MARKETING_VERSION: 0.5.0
+    MARKETING_VERSION: 0.6.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: "6.0"
     SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
@@ -27,6 +27,9 @@ targets:
       # The command line tool the app runs for every share operation.
       - path: ../velcro
         buildPhase: resources
+      # Copied to the Linux machine by "velcro mic setup <host>".
+      - path: ../velcro-mic-host
+        buildPhase: resources
     dependencies:
       # Reads files with the cache off to verify copies on network shares; lands in Contents/MacOS.
       - target: velcro-sha
@@ -44,6 +47,12 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: velcro
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
         INFOPLIST_KEY_NSHumanReadableCopyright: MIT License
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Mac Mic sends your microphone to the machine you chose, only while something there is recording."
+    # The hardened runtime needs this to open the microphone at all (Mac Mic).
+    entitlements:
+      path: velcro.entitlements
+      properties:
+        com.apple.security.device.audio-input: true
   velcro-sha:
     type: tool
     platform: macOS

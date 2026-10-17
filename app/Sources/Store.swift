@@ -79,7 +79,7 @@ final class Store: ObservableObject {
     func setting(_ key: String) -> String { settings[key]?.first ?? "" }
 
     /// Settings changed with `velcro set` in a terminal show up on the next refresh.
-    private func reloadSettingsIfChanged() async {
+    func reloadSettingsIfChanged() async {
         guard let path = env["SETTINGS"] else { return }
         let stamp = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
         guard stamp != settingsStamp else { return }
