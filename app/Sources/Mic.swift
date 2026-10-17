@@ -86,7 +86,7 @@ final class Mic: ObservableObject {
         }
         // Replaced by another Mac: only the menu's "Use This Mac's Microphone", or turning it off
         // and on again, takes it back. Anything else would have the two Macs taking turns.
-        if replaced { return }
+        if replaced && connectedHost == host { return }
         if ssh != nil && connectedHost == host { return }
         disconnect()
         connect()
