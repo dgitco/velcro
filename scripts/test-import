@@ -102,4 +102,23 @@ with tempfile.TemporaryDirectory(prefix="velcro-import-") as temp:
     run("import", "--files", queued, code=1)
     assert queued.exists()
 
-print("PASS: manual import, hashes, originals, duplicates, conflicts, validation, lock, queue and retry")
+    # A mount event during a CLI upload must get an automatic recorder pass afterward.
+    functions = CLI.read_text().split("\ncase ${1:-help} in", 1)[0]
+    harness = r'''
+import_files() { print MANUAL; : >"$IMPORT_AGAIN"; }
+flush_queue() { print FLUSH; }
+local_volumes() { print /Volumes/Fake; }
+is_recorder() { return 0; }
+import_volume() { print "RECORDER:$1"; }
+cmd_import --files /tmp/selected.m4a
+'''
+    for enabled in ("yes", "no"):
+        fixture_env = dict(env, HOME=str(root / ("mount-" + enabled)))
+        result = subprocess.run(["/bin/zsh"], input=functions +
+            f'\nsetting() {{ [[ $1 == import.auto ]] && print {enabled}; }}\n' + harness,
+            env=fixture_env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == (["MANUAL", "FLUSH", "RECORDER:/Volumes/Fake", "FLUSH"]
+            if enabled == "yes" else ["MANUAL", "FLUSH", "FLUSH"]), result.stdout
+
+print("PASS: manual import, hashes, originals, duplicates, conflicts, validation, lock, queue, retry and mount follow-up")

@@ -777,7 +777,9 @@ cmd_import() {
   for round in 1 2 3; do
     rm -f "$IMPORT_AGAIN"
     if [[ -n $selected ]]; then
-      if (( round == 1 )); then import_files "$@" || result=$?; fi
+      import_files "$@" || result=$?
+      # A mount during the upload requests a recorder scan, not another upload.
+      selected=; auto=1; set --
     elif [[ -z $auto ]] || is_on import.auto; then
       if (( $# )); then vols=("$@"); else vols=("${(@f)$(local_volumes)}"); fi
       for mp in $vols; do
