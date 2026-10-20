@@ -21,9 +21,10 @@ cp $zip $pub/
 # the app ships, so a command-line install verifies copies on shares the same way.
 cp $root/velcro $pub/velcro
 cp $root/build/velcro.app/Contents/MacOS/velcro-sha $pub/velcro-sha
+cp $root/velcro-transcribe $pub/velcro-transcribe
 # What the installer reads to know what to fetch and which checksums to expect.
 print -l "version=$version" "zip=${zip:t}" "zip_sha256=$(sha $zip)" "cli_sha256=$(sha $root/velcro)" \
-  "sha_tool_sha256=$(sha $pub/velcro-sha)" >$pub/latest
+  "sha_tool_sha256=$(sha $pub/velcro-sha)" "transcribe_sha256=$(sha $root/velcro-transcribe)" >$pub/latest
 print "/download /${zip:t} 302" >$pub/_redirects
 # The version search engines see in the page's structured data.
 sed -i '' -E "s/\"softwareVersion\": *\"[^\"]*\"/\"softwareVersion\": \"$version\"/" $pub/index.html
