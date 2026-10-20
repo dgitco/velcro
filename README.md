@@ -48,7 +48,7 @@ The [installer](site/public/install) checks each download against the SHA-256 in
 | <img src="assets/logo/menubar/detached.svg" width="18"> | something dropped — velcro is reattaching |
 | <img src="assets/logo/menubar/paused.svg" width="18"> | paused |
 
-The menu groups shared folders by server, each with open in Finder, reconnect, and remove, plus pause/resume, reconnect now, add share, settings, and the log. Settings edits the list (with fallback hosts), turns login launch on or off, and sets how often velcro checks.
+The menu groups shared folders by server, each with open in Finder, reconnect, and remove, plus pause/resume, reconnect now, add share, settings, and the log. **Transcribe Audio File…** turns a voice memo into text and copies it (see [Transcribe](#transcribe-a-voice-memo)). Settings edits the list (with fallback hosts), turns login launch on or off, and sets how often velcro checks.
 
 ## Command line
 
@@ -143,6 +143,7 @@ velcro transcribe --json memo.m4a          # {"engine":"claude","file":"…","te
 - It needs `python3` (on a Mac, the command line developer tools: `xcode-select --install`). A 16 kHz mono 16-bit WAV goes as is; anything else is converted with `ffmpeg`, or `afconvert` on a Mac (m4a, mp3, aac, wav, caf).
 - It's for memos and short recordings: the file is sent at about four times real time, so a 1-minute memo takes about 15 s.
 - **Fallback (off by default):** `velcro set transcribe.fallback "<command>"` runs that command with the file added at the end whenever Claude can't transcribe it, and prints what it prints, for example a local `whisper-cli -nt -f`. `--no-fallback` skips it once. Without one, the failure is reported as is and nothing else hears your audio.
+- In the menu, **Transcribe Audio File…** does the same for a file you pick and copies the text; a failure comes back as a notification.
 - On a Linux machine there is no app: put `velcro` and `velcro-transcribe` from this repository side by side in `~/.local/bin` and run `velcro transcribe` there.
 
 ## Settings
