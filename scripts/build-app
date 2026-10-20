@@ -7,6 +7,12 @@
 #   NOTARY_PROFILE=velcro SIGN_IDENTITY=… scripts/build-app
 #                                              also notarize and staple; create the profile once with
 #                                              xcrun notarytool store-credentials velcro
+#   SIGN_P12=sign.p12 SIGN_P12_PASSWORD=… scripts/build-app
+#                                              signed with the identity in that .p12, through a throwaway
+#                                              keychain (nothing is added to yours). A free self-signed
+#                                              code signing certificate is enough to keep what macOS
+#                                              allowed (the microphone) across updates: an ad-hoc
+#                                              build looks like a new app to macOS every time.
 #
 # The version comes from VERSION= in the velcro script, so the app and the command always match.
 set -e
@@ -16,6 +22,7 @@ out=$root/build
 app=$out/velcro.app
 zip=$out/velcro-$version.zip
 
+[[ -n $SIGN_P12 ]] && SIGN_P12=${SIGN_P12:A}   # before the cd below
 cd $root/app
 xcodegen generate --quiet
 xcodebuild -project velcro.xcodeproj -scheme velcro -configuration Release \
@@ -26,9 +33,25 @@ rm -rf $app $zip
 mkdir -p $out
 ditto build/dd/Build/Products/Release/velcro.app $app
 
+typeset -a signing=(--timestamp)
+if [[ -n $SIGN_P12 ]]; then
+  kc=$(mktemp -d)/sign.keychain-db
+  kcpw=$(openssl rand -hex 16)
+  trap 'security delete-keychain "$kc" 2>/dev/null' EXIT
+  security create-keychain -p "$kcpw" "$kc"
+  security set-keychain-settings "$kc"   # no auto-lock mid-build
+  security unlock-keychain -p "$kcpw" "$kc"
+  security import "$SIGN_P12" -k "$kc" -P "$SIGN_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpw" "$kc" >/dev/null
+  # A self-signed certificate is "matching", not "valid" (nothing trusts it), which is fine for this.
+  SIGN_IDENTITY=$(security find-identity -p codesigning "$kc" | awk '$1 == "1)" { print $2; exit }')
+  [[ -n $SIGN_IDENTITY ]] || { print -u2 "no code signing identity in $SIGN_P12"; exit 1; }
+  # Apple's timestamp service only stamps Apple-issued certificates.
+  signing=(--timestamp=none --keychain "$kc")
+fi
 if [[ -n $SIGN_IDENTITY ]]; then
   # The microphone entitlement (Mac Mic), without the debugging one an ad-hoc build carries.
-  codesign --force --options runtime --timestamp --entitlements $root/app/velcro.entitlements \
+  codesign --force --options runtime $signing --entitlements $root/app/velcro.entitlements \
     --sign "$SIGN_IDENTITY" $app
 fi
 codesign --verify --strict $app

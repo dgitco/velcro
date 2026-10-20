@@ -192,7 +192,7 @@ velcro.app runs that pass itself when the network changes, when the Mac wakes, a
 
 **Why does macOS say it can't check velcro?** velcro isn't notarized: that takes a paid Apple Developer membership, and velcro is free. macOS only checks apps a browser downloaded, so the `curl` installer skips the dialog and checks the SHA-256 instead. With the zip, open velcro once, click Done, then click **Open Anyway** in System Settings › Privacy & Security, or run `xattr -dr com.apple.quarantine /Applications/velcro.app`.
 
-**What will macOS ask me to allow?** Notifications (import and send results) and Login Items (start at login). The first import or send may ask to open files on a removable or network volume. Turning on Mac Mic asks for the microphone. No Full Disk Access, Accessibility, or Screen Recording.
+**What will macOS ask me to allow?** Notifications (import and send results) and Login Items (start at login). The first import or send may ask to open files on a removable or network volume. Turning on Mac Mic asks for the microphone, once: from 0.7.1 updates keep that answer (0.7.0 and earlier asked again after each update). No Full Disk Access, Accessibility, or Screen Recording.
 
 **Does velcro see my passwords?** No. Share passwords stay in your keychain and macOS uses them to mount. velcro has no tokens or keys of its own. `velcro transcribe` reads your Claude Code login while it runs, to send the audio to Anthropic as Claude Code would, and nothing else.
 
@@ -208,7 +208,7 @@ scripts/build-icons       # only after changing assets/logo
 scripts/build-app         # → build/velcro.app and build/velcro-<version>.zip
 ```
 
-`SIGN_IDENTITY` and `NOTARY_PROFILE` sign and notarize a release; see the top of `scripts/build-app`. Both name things in your keychain; no key or password goes in the repository. `scripts/deploy-site` publishes `site/`, the installer, the zip, and `latest` (version and checksums) to velcro.dgit.co; `--stage` only prepares `site/public` so you can try the installer locally with `VELCRO_BASE=http://localhost:8000`. The version comes from `VERSION=` in the `velcro` script.
+`SIGN_IDENTITY` and `NOTARY_PROFILE` sign and notarize a release; see the top of `scripts/build-app`. Both name things in your keychain; no key or password goes in the repository. Releases are signed with `SIGN_P12` instead: a free self-signed certificate, the same for every release, so macOS keeps the microphone permission across updates (an ad-hoc build is a new app to macOS each time). It still isn't notarized. `scripts/deploy-site` publishes `site/`, the installer, the zip, and `latest` (version and checksums) to velcro.dgit.co; `--stage` only prepares `site/public` so you can try the installer locally with `VELCRO_BASE=http://localhost:8000`. The version comes from `VERSION=` in the `velcro` script.
 
 ## Design
 
