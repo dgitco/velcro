@@ -39,6 +39,8 @@ MIC_STATUS=$SUPPORT/mic.status
 MIC_HELPER=${SELF:h}/velcro-mic-host
 # "velcro mic on" leaves this for velcro.app: use this Mac's microphone even if another Mac took over.
 MIC_TAKE=$CONF_DIR/.mic-take
+# Transcribe (see "velcro help"): talks to Claude Code's speech-to-text with your own login.
+TRANSCRIBE_HELPER=${SELF:h}/velcro-transcribe
 
 log() { print -r -- "$(date '+%F %T') $*" >>"$LOG"; }
 
@@ -244,6 +246,9 @@ cmd_install() {
   else
     # Replace, don't write through: $BIN may be a link into velcro.app.
     [[ $SELF == "${BIN:A}" ]] || { rm -f "$BIN"; cp "$SELF" "$BIN"; chmod +x "$BIN"; }
+    # velcro transcribe finds its helper next to the command.
+    [[ -f $TRANSCRIBE_HELPER && ${TRANSCRIBE_HELPER:A} != ${BIN:h:A}/velcro-transcribe ]] &&
+      cp -f "$TRANSCRIBE_HELPER" "${BIN:h}/velcro-transcribe" && chmod +x "${BIN:h}/velcro-transcribe"
     mkdir -p "${PLIST:h}"
     cat >"$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -277,6 +282,8 @@ cmd_uninstall() {
     rm -f "$BIN" && print "removed $BIN"
   fi
   [[ -f ${BIN:h}/velcro-sha ]] && rm -f "${BIN:h}/velcro-sha"
+  [[ -f ${BIN:h}/velcro-transcribe ]] && grep -q '^"""velcro-transcribe:' "${BIN:h}/velcro-transcribe" &&
+    rm -f "${BIN:h}/velcro-transcribe"
   print "agent removed (settings kept in $CONF_DIR; delete that folder too to forget them)"
 }
 
@@ -350,9 +357,12 @@ cmd_env() {
 #   mic.host      = devbox                          SSH host that gets this Mac's microphone
 #   mic.on        = no                              send it while something there records
 #   mic.warm      = 0                               seconds the mic stays open after a recording
+#   transcribe.lang     = en                        language spoken in files for "velcro transcribe"
+#   transcribe.login    = ~/.claude                 Claude Code folder whose login it uses; may repeat
+#   transcribe.fallback = whisper-cli -f            command run with the file when Claude fails; empty = none
 
 KEYS=(import.dest import.ext import.folder import.delete import.auto recorder send.inbox send.keep map
-  mic.host mic.on mic.warm)
+  mic.host mic.on mic.warm transcribe.lang transcribe.login transcribe.fallback)
 typeset -A DEFAULTS=(
   import.ext 'wav mp3 m4a aac flac wma ogg'
   import.delete yes
@@ -360,6 +370,7 @@ typeset -A DEFAULTS=(
   mic.on no
   mic.warm 0
   send.keep 14
+  transcribe.lang en
 )
 
 # Every value of <key>, one per line, or its default when the file has none.
@@ -398,6 +409,8 @@ cmd_set() {
   [[ $1 == --add ]] && { append=1; shift; }
   local key=$1 v line; shift 2>/dev/null
   (( ${KEYS[(Ie)$key]} )) || { print -u2 "unknown setting: $key (one of: $KEYS)"; return 2; }
+  [[ $key == transcribe.(fallback|lang) ]] && (( $# > 1 )) &&
+    { print -u2 "$key takes one value; quote a command line: velcro set $key \"whisper-cli -nt -f\""; return 2; }
   for v in "$@"; do
     case $key in
       import.delete|import.auto) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
@@ -407,6 +420,8 @@ cmd_set() {
       mic.warm) [[ $v == <-> ]] || { print -u2 "mic.warm is a number of seconds"; return 2; } ;;
       mic.host) [[ -n $v && $v != -* && $v != *[[:space:]]* ]] || { print -u2 "mic.host is an SSH host, like devbox or me@devbox.local"; return 2; } ;;
       map) [[ $v == (/|\~/)?*' -> '/* ]] || { print -u2 "map looks like: /Volumes/home -> /mnt/nas/me  (the left side may start with ~/)"; return 2; } ;;
+      transcribe.lang) [[ $v == [a-z][a-z](|-[A-Za-z][A-Za-z]) ]] || { print -u2 "transcribe.lang is a language code, like en or ko"; return 2; } ;;
+      transcribe.login) [[ $v == (/|\~/)?* ]] || { print -u2 "transcribe.login is a Claude Code folder, like ~/.claude"; return 2; } ;;
       recorder) [[ $v == (uuid|name):?* ]] || { print -u2 "recorder is uuid:<VolumeUUID> or name:<volume name>"; return 2; } ;;
     esac
   done
@@ -992,6 +1007,72 @@ cmd_mic() {
   esac
 }
 
+# Transcribe: an audio file (a voice memo from Slack, a recording) to text through the speech-to-text
+# Claude Code's /voice uses, with the user's own Claude Code login. velcro-transcribe does the talking;
+# this adds the settings, the optional fallback command, and what velcro.app needs. The login is never
+# renewed, printed or sent anywhere but Anthropic. voice_stream isn't a public API: own login, own audio.
+
+# python3, without setting off the "install the command line developer tools" dialog on a Mac.
+transcribe_python() {
+  local py=${commands[python3]}
+  [[ -n $py ]] && { [[ $OSTYPE != darwin* || $py != /usr/bin/python3 ]] || xcode-select -p >/dev/null 2>&1; } &&
+    { print -r -- "$py"; return 0; }
+  [[ $OSTYPE == darwin* ]] && print -u2 "velcro transcribe needs python3: xcode-select --install" ||
+    print -u2 "velcro transcribe needs python3"
+  return 1
+}
+
+# velcro transcribe [--lang <code>] [--no-fallback] [--json] <file>: the text on stdout.
+cmd_transcribe() {
+  local lang=$(setting transcribe.lang) fallback=$(setting transcribe.fallback) json=
+  while [[ $1 == -* ]]; do
+    case $1 in
+      --lang) [[ $2 == [a-z][a-z](|-[A-Za-z][A-Za-z]) ]] || { print -u2 -- "--lang takes a language code, like en or ko"; return 2; }
+              lang=$2; shift 2 ;;
+      --no-fallback) fallback=; shift ;;
+      --json) json=1; shift ;;
+      --) shift; break ;;
+      *) print -u2 "unknown option: $1"; return 2 ;;
+    esac
+  done
+  (( $# == 1 )) || { print -u2 "usage: velcro transcribe [--lang <code>] [--no-fallback] [--json] <audio file>"; return 2; }
+  local file=${1:a}
+  [[ -f $file ]] || { print -u2 "no such file: $1"; return 1; }
+  [[ -r $TRANSCRIBE_HELPER ]] || { print -u2 "velcro-transcribe is missing next to $SELF; install velcro again"; return 1; }
+  local -a args=(--lang "$lang") cmd
+  local login py text= engine=claude rc
+  for login in "${(@f)$(setting_all transcribe.login)}"; do
+    [[ -n $login ]] && args+=(--login "${login/#\~/$HOME}")
+  done
+  # The helper's messages go to the terminal afterwards; velcro.app gets a notification instead.
+  local err=$(mktemp "${TMPDIR:-/tmp}/velcro-transcribe.XXXXXX")
+  if py=$(transcribe_python 2>>"$err"); then
+    text=$("$py" "$TRANSCRIBE_HELPER" "${args[@]}" -- "$file" 2>>"$err"); rc=$?
+  else
+    rc=1
+  fi
+  if (( rc )) && [[ -n $fallback ]]; then
+    # The setting is a command line; the file goes last. A leading ~ means the home folder.
+    cmd=("${(Q@)${(z)fallback}}"); cmd[1]=${cmd[1]/#\~/$HOME}
+    print -r -- "trying the fallback: $fallback" >>"$err"
+    engine=fallback
+    text=$("${cmd[@]}" "$file" 2>>"$err"); rc=$?
+    (( rc )) || [[ -n ${text//[[:space:]]/} ]] || { print -r -- "the fallback printed nothing" >>"$err"; rc=1; }
+  fi
+  local why=$(tail -n 1 "$err" 2>/dev/null)
+  [[ -z $VELCRO_APP ]] && cat "$err" >&2
+  rm -f "$err"
+  if (( rc )); then
+    [[ -n $VELCRO_APP ]] && notify "Couldn't transcribe ${file:t}: ${why#velcro-transcribe: }"
+    return 1
+  fi
+  if [[ -n $json ]]; then
+    print -r -- "{\"engine\":$(json_str $engine),\"file\":$(json_str "$file"),\"text\":$(json_str "$text")}"
+  else
+    print -r -- "$text"
+  fi
+}
+
 cmd_help() {
   cat <<EOF
 velcro $VERSION — keep network shares stuck to your Mac
@@ -1013,6 +1094,9 @@ velcro $VERSION — keep network shares stuck to your Mac
   velcro mic on <ssh host>   lend this Mac's microphone to a Linux machine you SSH into, for voice
                              input there (Claude Code /voice); open only while it records
   velcro mic off | status | remove
+  velcro transcribe <file>   audio file to text, through the speech-to-text Claude Code's /voice
+                             uses, with your own Claude Code login (--lang ko, --json, --no-fallback).
+                             Not a public API: only your own login and audio, never shared
   velcro settings            show settings;  velcro set [--add] <key> [value ...] to change one
 
 settings ($SETTINGS):
@@ -1029,6 +1113,11 @@ settings ($SETTINGS):
   mic.on        yes while lending it (no)
   mic.warm      seconds the microphone stays open after a recording, so the next one starts
                 at once (0)
+  transcribe.lang      language spoken in the files, e.g. ko (${DEFAULTS[transcribe.lang]})
+  transcribe.login     Claude Code folder whose login to use; repeat to try several
+                       (\$CLAUDE_CONFIG_DIR or ~/.claude). It is read, never renewed
+  transcribe.fallback  command to run with the file when Claude can't transcribe it, printing
+                       the text, e.g. "whisper-cli -nt -f" (none: the failure is reported)
 
 config: $CONF
 EOF
@@ -1050,6 +1139,7 @@ case ${1:-help} in
   recorder|recorders) shift; cmd_recorder "$@" ;;
   send)        shift; cmd_send "$@" ;;
   mic)         shift; cmd_mic "$@" ;;
+  transcribe)  shift; cmd_transcribe "$@" ;;
   settings)    cmd_settings ;;
   set)         shift; cmd_set "$@" ;;
   version|-v|--version) print "velcro $VERSION" ;;

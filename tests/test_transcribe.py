@@ -1,4 +1,4 @@
-"""velcro-transcribe: the login boundary and the voice_stream protocol.
+"""velcro transcribe: the login boundary, the voice_stream protocol, and the fallback contract.
 
   python3 -m unittest discover -s tests
 """
@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import struct
+import subprocess
 import tempfile
 import time
 import unittest
@@ -113,6 +114,79 @@ class Protocol(unittest.TestCase):
     def test_query_asks_for_16k_mono_pcm(self):
         q = dict(p.split('=') for p in vt.voice_query('ko').split('&'))
         self.assertEqual((q['encoding'], q['sample_rate'], q['channels'], q['language']), ('linear16', '16000', '1', 'ko'))
+
+
+class Fallback(unittest.TestCase):
+    """velcro transcribe with a stand-in helper: what the fallback setting does."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        shutil.copy(ROOT / 'velcro', self.tmp / 'velcro')
+        self.helper = self.tmp / 'velcro-transcribe'
+        self.audio = self.tmp / 'memo.m4a'
+        self.audio.write_bytes(b'not really audio')
+        self.fallback = self.tmp / 'other-engine'
+        self.fallback.write_text('#!/bin/sh\necho "from the fallback: $*"\n')
+        self.fallback.chmod(0o755)
+        self.env = {**os.environ, 'XDG_CONFIG_HOME': str(self.tmp / 'config')}
+        self.env.pop('VELCRO_APP', None)
+
+    def helper_says(self, code, text=''):
+        self.helper.write_text(f'import sys\nprint({text!r})\nprint("velcro-transcribe: helper said no", file=sys.stderr)\n'
+                               f'sys.exit({code})\n')
+
+    def velcro(self, *args):
+        return subprocess.run(['zsh', str(self.tmp / 'velcro'), *args], env=self.env, capture_output=True,
+                              text=True, timeout=30)
+
+    def test_claude_text_is_printed(self):
+        self.helper_says(0, 'hello')
+        r = self.velcro('transcribe', '--json', str(self.audio))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {'engine': 'claude', 'file': str(self.audio), 'text': 'hello'})
+
+    def test_without_fallback_the_failure_is_reported(self):
+        self.helper_says(1)
+        r = self.velcro('transcribe', str(self.audio))
+        self.assertEqual((r.returncode, r.stdout), (1, ''))
+        self.assertIn('helper said no', r.stderr)
+
+    def test_fallback_runs_with_the_file_when_claude_fails(self):
+        self.helper_says(1)
+        self.velcro('set', 'transcribe.fallback', f'{self.fallback} --some-flag')
+        r = self.velcro('transcribe', '--json', str(self.audio))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)['engine'], 'fallback')
+        self.assertEqual(json.loads(r.stdout)['text'], f'from the fallback: --some-flag {self.audio}')
+        self.assertIn('helper said no', r.stderr)
+
+    def test_no_fallback_flag_skips_it(self):
+        self.helper_says(1)
+        self.velcro('set', 'transcribe.fallback', str(self.fallback))
+        r = self.velcro('transcribe', '--no-fallback', str(self.audio))
+        self.assertEqual((r.returncode, r.stdout), (1, ''))
+
+    def test_fallback_not_used_when_claude_works(self):
+        self.helper_says(0, 'hello')
+        self.velcro('set', 'transcribe.fallback', str(self.fallback))
+        r = self.velcro('transcribe', str(self.audio))
+        self.assertEqual(r.stdout, 'hello\n')
+
+    def test_bad_input_is_a_usage_error(self):
+        self.helper_says(0, 'hello')
+        for args in (['transcribe', '--lang'], ['transcribe', '--lang', str(self.audio)],
+                     ['set', 'transcribe.fallback', 'whisper-cli', '-nt', '-f']):
+            self.assertEqual(self.velcro(*args).returncode, 2, args)
+
+    def test_settings_passed_to_the_helper(self):
+        self.helper.write_text('import sys, json\nprint(json.dumps(sys.argv[1:]))\n')
+        self.velcro('set', 'transcribe.lang', 'ko')
+        self.velcro('set', 'transcribe.login', '~/.claude-work', '/srv/claude')
+        r = self.velcro('transcribe', str(self.audio))
+        home = os.environ['HOME']
+        self.assertEqual(json.loads(r.stdout), ['--lang', 'ko', '--login', f'{home}/.claude-work',
+                                                '--login', '/srv/claude', '--', str(self.audio)])
 
 
 if __name__ == '__main__':

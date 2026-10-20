@@ -30,6 +30,9 @@ targets:
       # Copied to the Linux machine by "velcro mic setup <host>".
       - path: ../velcro-mic-host
         buildPhase: resources
+      # Talks to Claude Code's speech-to-text for "velcro transcribe".
+      - path: ../velcro-transcribe
+        buildPhase: resources
     dependencies:
       # Reads files with the cache off to verify copies on network shares; lands in Contents/MacOS.
       - target: velcro-sha

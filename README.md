@@ -14,11 +14,12 @@ macOS drops SMB mounts whenever Wi‑Fi blips, the lid closes, or you change net
 - A menu bar app and a `velcro` command that share the same list
 - Uses the password macOS already saved in your Keychain
 
-It also does two things that don't need a NAS at all:
+It also does things that don't need a NAS at all:
 
 - **[Voice recorder import](#import-from-a-voice-recorder):** plug in a USB recorder and its recordings are copied to any folder you choose, checked by SHA-256, then cleared from the recorder
 - **[Send to an inbox](#send-to-an-inbox):** save a recent screenshot or file to a folder (a share, Dropbox, Syncthing) and copy its path, even the path a server sees
 - **[Mac mic](#lend-your-macs-microphone-to-a-server):** lend your Mac's microphone to a Linux machine you use over SSH, so voice input there (Claude Code's `/voice`) hears you; it's open only while something there records
+- **[Transcribe](#transcribe-a-voice-memo):** turn an audio file, like a Slack voice memo, into text with the speech-to-text Claude Code's `/voice` uses, signed in as you
 
 ## Install
 
@@ -127,6 +128,23 @@ velcro mic off
 - Only one Mac lends its microphone to a server at a time. Turning it on on a second Mac takes over; the first shows **Use This Mac's Microphone** to take it back.
 - `velcro mic remove` deletes the helper from the server and forgets the host.
 
+## Transcribe a voice memo
+
+The other way round from Mac mic: you already have the audio, a voice memo from Slack or a recording, and want the text. `velcro transcribe` sends the file to the same speech-to-text Claude Code's `/voice` uses, with your own Claude Code login, and prints what it heard.
+
+```sh
+velcro transcribe memo.m4a                 # the text, on stdout
+velcro transcribe --lang ko memo.m4a       # language spoken (default en; or velcro set transcribe.lang ko)
+velcro transcribe --json memo.m4a          # {"engine":"claude","file":"…","text":"…"}
+```
+
+- **Only your own login, for your own audio.** This is the stream Claude Code itself uses, not a public API, so Anthropic's terms may not cover other uses. Don't point velcro at someone else's login, and don't copy your login to a server or share it.
+- The login is read from `~/.claude` (or `$CLAUDE_CONFIG_DIR`), or the keychain on a Mac, which may ask once to let `security` read "Claude Code-credentials". velcro never renews it (renewing would sign Claude Code out), never prints it, and sends it only to Anthropic. If it has expired, use Claude Code once and try again. `velcro set transcribe.login ~/.claude ~/.claude-work` tries several folders in order.
+- It needs `python3` (on a Mac, the command line developer tools: `xcode-select --install`). A 16 kHz mono 16-bit WAV goes as is; anything else is converted with `ffmpeg`, or `afconvert` on a Mac (m4a, mp3, aac, wav, caf).
+- It's for memos and short recordings: the file is sent at about four times real time, so a 1-minute memo takes about 15 s.
+- **Fallback (off by default):** `velcro set transcribe.fallback "<command>"` runs that command with the file added at the end whenever Claude can't transcribe it, and prints what it prints, for example a local `whisper-cli -nt -f`. `--no-fallback` skips it once. Without one, the failure is reported as is and nothing else hears your audio.
+- On a Linux machine there is no app: put `velcro` and `velcro-transcribe` from this repository side by side in `~/.local/bin` and run `velcro transcribe` there.
+
 ## Settings
 
 `velcro settings` shows them all; `velcro set <key> [value ...]` changes one, and `velcro set <key>` puts the default back. They're kept in `~/.config/velcro/settings`:
@@ -145,6 +163,9 @@ velcro mic off
 | `mic.host` | | SSH host that gets the microphone; `velcro mic setup <host>` sets it |
 | `mic.on` | `no` | lend the microphone (`velcro mic on`/`off`) |
 | `mic.warm` | `0` | seconds the microphone stays open after a recording |
+| `transcribe.lang` | `en` | language spoken in files for `velcro transcribe`, like `ko` |
+| `transcribe.login` | `~/.claude` | Claude Code folder whose login to use; several are tried in order |
+| `transcribe.fallback` | | command run with the file when Claude can't transcribe it; none reports the failure |
 
 ## How it works
 
@@ -172,7 +193,7 @@ velcro.app runs that pass itself when the network changes, when the Mac wakes, a
 
 **What will macOS ask me to allow?** Notifications (import and send results) and Login Items (start at login). The first import or send may ask to open files on a removable or network volume. Turning on Mac Mic asks for the microphone. No Full Disk Access, Accessibility, or Screen Recording.
 
-**Does velcro see my passwords?** No. Share passwords stay in your keychain and macOS uses them to mount. velcro has no tokens or keys of its own.
+**Does velcro see my passwords?** No. Share passwords stay in your keychain and macOS uses them to mount. velcro has no tokens or keys of its own. `velcro transcribe` reads your Claude Code login while it runs, to send the audio to Anthropic as Claude Code would, and nothing else.
 
 **What does it do with my clipboard?** It lists the last four images or files you copied. Copied images are kept in `~/Library/Application Support/velcro/clips` until they drop off the list or velcro quits; items password managers mark as private are skipped. It only writes to the clipboard when you pick something to send.
 
