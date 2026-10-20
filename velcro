@@ -1027,7 +1027,7 @@ cmd_transcribe() {
   local lang=$(setting transcribe.lang) fallback=$(setting transcribe.fallback) json=
   while [[ $1 == -* ]]; do
     case $1 in
-      --lang) [[ $2 == [a-z][a-z](|-[A-Za-z][A-Za-z]) ]] || { print -u2 "--lang takes a language code, like en or ko"; return 2; }
+      --lang) [[ $2 == [a-z][a-z](|-[A-Za-z][A-Za-z]) ]] || { print -u2 -- "--lang takes a language code, like en or ko"; return 2; }
               lang=$2; shift 2 ;;
       --no-fallback) fallback=; shift ;;
       --json) json=1; shift ;;
