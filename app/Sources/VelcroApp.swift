@@ -95,6 +95,7 @@ struct MenuContent: View {
         ImportMenu()
         SendMenu()
         MicMenu()
+        TranscribeMenu()
 
         Divider()
         if store.paused {
@@ -195,5 +196,19 @@ struct MicMenu: View {
             }
             Button(mic.state == .off ? "Lend Microphone" : "Stop Lending Microphone") { mic.toggle() }
         }
+    }
+}
+
+/// Audio file to text through the speech-to-text Claude Code's /voice uses.
+struct TranscribeMenu: View {
+    @ObservedObject private var transcriber = Transcriber.shared
+
+    var body: some View {
+        Divider()
+        if let file = transcriber.running {
+            Text("Transcribing \(file)…")
+        }
+        Button("Transcribe Audio File…") { transcriber.pick() }
+            .disabled(transcriber.running != nil)
     }
 }
