@@ -173,6 +173,12 @@ class Fallback(unittest.TestCase):
         r = self.velcro('transcribe', str(self.audio))
         self.assertEqual(r.stdout, 'hello\n')
 
+    def test_bad_input_is_a_usage_error(self):
+        self.helper_says(0, 'hello')
+        for args in (['transcribe', '--lang'], ['transcribe', '--lang', str(self.audio)],
+                     ['set', 'transcribe.fallback', 'whisper-cli', '-nt', '-f']):
+            self.assertEqual(self.velcro(*args).returncode, 2, args)
+
     def test_settings_passed_to_the_helper(self):
         self.helper.write_text('import sys, json\nprint(json.dumps(sys.argv[1:]))\n')
         self.velcro('set', 'transcribe.lang', 'ko')

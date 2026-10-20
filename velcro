@@ -409,6 +409,8 @@ cmd_set() {
   [[ $1 == --add ]] && { append=1; shift; }
   local key=$1 v line; shift 2>/dev/null
   (( ${KEYS[(Ie)$key]} )) || { print -u2 "unknown setting: $key (one of: $KEYS)"; return 2; }
+  [[ $key == transcribe.(fallback|lang) ]] && (( $# > 1 )) &&
+    { print -u2 "$key takes one value; quote a command line: velcro set $key \"whisper-cli -nt -f\""; return 2; }
   for v in "$@"; do
     case $key in
       import.delete|import.auto) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
@@ -1025,7 +1027,8 @@ cmd_transcribe() {
   local lang=$(setting transcribe.lang) fallback=$(setting transcribe.fallback) json=
   while [[ $1 == -* ]]; do
     case $1 in
-      --lang) lang=$2; shift 2 ;;
+      --lang) [[ $2 == [a-z][a-z](|-[A-Za-z][A-Za-z]) ]] || { print -u2 "--lang takes a language code, like en or ko"; return 2; }
+              lang=$2; shift 2 ;;
       --no-fallback) fallback=; shift ;;
       --json) json=1; shift ;;
       --) shift; break ;;
