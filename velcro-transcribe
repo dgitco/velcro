@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""velcro-transcribe: an audio file → text, the way Claude Code's /voice does it.
+
+It sends the audio to Claude Code's speech-to-text stream (voice_stream) with your own Claude Code
+login and prints what comes back. `velcro transcribe` runs it; it also runs on its own:
+
+  velcro-transcribe [--lang ko] [--login <claude config dir> ...] <audio file>
+
+The login is read, never refreshed (renewing it here would sign Claude Code out) and never printed.
+voice_stream is what Claude Code itself uses, not a public API: use only your own login, for your
+own audio, and don't share it with other people or servers.
+
+Audio: a 16 kHz mono 16-bit WAV is sent as is; anything else goes through ffmpeg, or afconvert on
+a Mac. Exit status: 0 text on stdout, 1 failed (reason on stderr), 2 usage.
+"""
+import argparse
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import ssl
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+import wave
+
+API_HOST = 'api.anthropic.com'
+VOICE_PATH = '/api/ws/speech_to_text/voice_stream'
+CLAUDE_VERSION = '2.1.304'  # used when `claude --version` can't be asked
+RATE, CHUNK_MS = 16000, 100
+PACE = 4.0  # send at 4x real time: the server transcribes at about that speed, so faster ends no sooner
+IDLE_S = 10  # after CloseStream, stop when nothing has arrived for this long
+KEYCHAIN = 'Claude Code-credentials'
+
+
+class Failed(Exception):
+    pass
+
+
+def say(*a):
+    print('velcro-transcribe:', *a, file=sys.stderr, flush=True)
+
+
+# ---- audio ----
+
+def wav_pcm16k(path):
+    """PCM frames of a 16 kHz mono 16-bit WAV, or None for any other file."""
+    try:
+        with wave.open(str(path)) as w:
+            if (w.getnchannels(), w.getframerate(), w.getsampwidth()) == (1, RATE, 2):
+                return w.readframes(w.getnframes())
+    except (wave.Error, EOFError, OSError):
+        pass
+    return None
+
+
+def to_pcm(path):
+    """Any audio file → 16 kHz mono s16le bytes."""
+    pcm = wav_pcm16k(path)
+    if pcm is not None:
+        return pcm
+    with tempfile.TemporaryDirectory(prefix='velcro-transcribe-') as tmp:
+        if shutil.which('ffmpeg'):
+            out = Path(tmp) / 'audio.s16'
+            cmd = ['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', str(path),
+                   '-vn', '-ac', '1', '-ar', str(RATE), '-f', 's16le', '-c:a', 'pcm_s16le', str(out)]
+        elif shutil.which('afconvert'):
+            out = Path(tmp) / 'audio.wav'
+            cmd = ['afconvert', '-f', 'WAVE', '-d', f'LEI16@{RATE}', '-c', '1', str(path), str(out)]
+        else:
+            raise Failed('this file needs ffmpeg to read it (or give a 16 kHz mono 16-bit WAV)')
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+        if r.returncode or not out.exists():
+            raise Failed(f"couldn't read the audio ({cmd[0]}): {r.stderr.strip()[-300:]}")
+        return riff_data(out) if out.suffix == '.wav' else out.read_bytes()
+
+
+def riff_data(path):
+    """The data chunk of a WAV afconvert wrote in the format asked for. Python's wave module can't
+    read it: afconvert labels it WAVE_FORMAT_EXTENSIBLE and adds a FLLR padding chunk."""
+    b = Path(path).read_bytes()
+    pos = 12
+    while pos + 8 <= len(b):
+        kind, size = b[pos:pos + 4], struct.unpack('<I', b[pos + 4:pos + 8])[0]
+        if kind == b'data':
+            return b[pos + 8:pos + 8 + size]
+        pos += 8 + size + (size & 1)
+    raise Failed('afconvert gave a WAV without audio')
+
+
+def chunks(pcm, ms=CHUNK_MS):
+    size = RATE * 2 * ms // 1000
+    return [pcm[i:i + size] for i in range(0, len(pcm), size)]
+
+
+# ---- the smallest WebSocket client (RFC 6455) that does the job ----
+
+def ws_frame(opcode, payload, mask=None):
+    """One client frame: FIN set, masked as clients must."""
+    mask = os.urandom(4) if mask is None else mask
+    n = len(payload)
+    head = bytes([0x80 | opcode])
+    if n < 126:
+        head += bytes([0x80 | n])
+    elif n < 1 << 16:
+        head += bytes([0x80 | 126]) + struct.pack('!H', n)
+    else:
+        head += bytes([0x80 | 127]) + struct.pack('!Q', n)
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+
+def ws_parse(buf):
+    """The frame at the start of buf → (fin, opcode, payload, bytes used), or None if it's incomplete."""
+    if len(buf) < 2:
+        return None
+    fin, opcode = buf[0] & 0x80, buf[0] & 0x0F
+    masked, n, pos = buf[1] & 0x80, buf[1] & 0x7F, 2
+    if n == 126:
+        if len(buf) < 4:
+            return None
+        n, pos = struct.unpack('!H', buf[2:4])[0], 4
+    elif n == 127:
+        if len(buf) < 10:
+            return None
+        n, pos = struct.unpack('!Q', buf[2:10])[0], 10
+    key = b''
+    if masked:
+        if len(buf) < pos + 4:
+            return None
+        key, pos = buf[pos:pos + 4], pos + 4
+    if len(buf) < pos + n:
+        return None
+    payload = buf[pos:pos + n]
+    if masked:
+        payload = bytes(b ^ key[i % 4] for i, b in enumerate(payload))
+    return bool(fin), opcode, payload, pos + n
+
+
+class WS:
+    def __init__(self, host, path, headers, timeout=20):
+        raw = socket.create_connection((host, 443), timeout=timeout)
+        self.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+        key = base64.b64encode(os.urandom(16)).decode()
+        lines = [f'GET {path} HTTP/1.1', f'Host: {host}', 'Upgrade: websocket', 'Connection: Upgrade',
+                 f'Sec-WebSocket-Key: {key}', 'Sec-WebSocket-Version: 13']
+        lines += [f'{k}: {v}' for k, v in headers.items()]
+        self.sock.sendall(('\r\n'.join(lines) + '\r\n\r\n').encode())
+        resp = b''
+        while b'\r\n\r\n' not in resp:
+            got = self.sock.recv(4096)
+            if not got:
+                raise ConnectionError('connection closed during the handshake')
+            resp += got
+        head, self.buf = resp.split(b'\r\n\r\n', 1)
+        status = head.split(b'\r\n', 1)[0].decode(errors='replace')
+        if ' 101 ' not in status + ' ':
+            raise ConnectionError('voice_stream refused the connection: ' + status)
+        self.parts, self.closed = [], False
+
+    def _send(self, frame):
+        self.sock.settimeout(20)
+        self.sock.sendall(frame)
+
+    def send_text(self, s):
+        self._send(ws_frame(0x1, s.encode()))
+
+    def send_binary(self, b):
+        self._send(ws_frame(0x2, b))
+
+    def recv(self, timeout):
+        """The next data message (str or bytes), None on timeout; EOFError once closed."""
+        while True:
+            frame = ws_parse(self.buf)
+            if frame:
+                fin, op, payload, used = frame
+                self.buf = self.buf[used:]
+                if op == 0x8:
+                    self.closed = True
+                    code = struct.unpack('!H', payload[:2])[0] if len(payload) >= 2 else 1005
+                    raise EOFError(f'closed (code {code}) {payload[2:].decode(errors="replace")}'.strip())
+                if op == 0x9:
+                    self._send(ws_frame(0xA, payload))
+                    continue
+                if op == 0xA:
+                    continue
+                self.parts.append((op, payload))
+                if not fin:
+                    continue
+                first = self.parts[0][0]
+                data = b''.join(p for _, p in self.parts)
+                self.parts = []
+                return data.decode() if first == 0x1 else data
+            try:
+                self.sock.settimeout(timeout)
+                got = self.sock.recv(65536)
+            except (socket.timeout, TimeoutError, ssl.SSLWantReadError, BlockingIOError):
+                return None
+            if not got:
+                self.closed = True
+                raise EOFError('connection closed')
+            self.buf += got
+
+    def close(self):
+        try:
+            if not self.closed:
+                self._send(ws_frame(0x8, struct.pack('!H', 1000)))
+        except OSError:
+            pass
+        self.sock.close()
+
+
+# ---- the login ----
+
+def default_logins():
+    d = os.environ.get('CLAUDE_CONFIG_DIR')
+    return [Path(d)] if d else [Path.home() / '.claude']
+
+
+def keychain_oauth(config_dir):
+    """Claude Code on a Mac keeps the login in the keychain. Its item is "Claude Code-credentials" for
+    ~/.claude, with "-<first 8 hex of sha256(dir)>" added for any other CLAUDE_CONFIG_DIR."""
+    if sys.platform != 'darwin' or not shutil.which('security'):
+        return None
+    service = KEYCHAIN
+    if Path(config_dir).expanduser() != Path.home() / '.claude':
+        service += '-' + hashlib.sha256(str(config_dir).encode()).hexdigest()[:8]
+    user = os.environ.get('USER') or 'claude-code-user'
+    r = subprocess.run(['security', 'find-generic-password', '-a', user, '-w', '-s', service],
+                       stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    if r.returncode:
+        return None
+    try:
+        return json.loads(r.stdout).get('claudeAiOauth') or None
+    except ValueError:
+        return None
+
+
+def file_oauth(config_dir):
+    try:
+        return json.loads((Path(config_dir) / '.credentials.json').read_text()).get('claudeAiOauth') or None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def claude_token(logins, now=None, read=None):
+    """(access token, login folder) from the first login that hasn't expired. The token stays in this
+    process: it is never printed, written, or renewed. Raises Failed saying what to do otherwise."""
+    now = time.time() if now is None else now
+    read = read or (lambda d: file_oauth(d) or keychain_oauth(d))
+    expired = []
+    for d in logins:
+        oauth = read(d)
+        if not oauth or not oauth.get('accessToken'):
+            continue
+        if (oauth.get('expiresAt') or 0) / 1000 > now + 120:
+            return oauth['accessToken'], str(d)
+        expired.append(str(d))
+    if expired:
+        raise Failed(f"the Claude Code login in {', '.join(expired)} has expired. velcro doesn't renew it "
+                     '(that would sign Claude Code out); use Claude Code there once and try again.')
+    raise Failed(f"no Claude Code login in {', '.join(map(str, logins))}. Sign in to Claude Code (claude, then "
+                 '/login) with your Claude account first.')
+
+
+def claude_version():
+    # velcro.app's PATH leaves out ~/.local/bin, where Claude Code's installer puts it.
+    claude = shutil.which('claude') or str(Path.home() / '.local/bin/claude')
+    try:
+        r = subprocess.run([claude, '--version'], stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, timeout=10)
+        v = r.stdout.split()[0] if r.returncode == 0 and r.stdout.strip() else ''
+        if v[:1].isdigit():
+            return v
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return CLAUDE_VERSION
+
+
+# ---- voice_stream ----
+
+def voice_query(language):
+    return urllib.parse.urlencode({
+        'encoding': 'linear16', 'sample_rate': str(RATE), 'channels': '1', 'endpointing_ms': '300',
+        'utterance_end_ms': '1000', 'language': language, 'use_conversation_engine': 'true'})
+
+
+class Transcript:
+    """Collects voice_stream messages the way Claude Code does: Text/Interim replace the utterance in
+    progress, Endpoint makes it final."""
+
+    def __init__(self):
+        self.final, self.pending, self.endpoint_after_close, self.error = [], '', False, None
+
+    def feed(self, message, closing=False):
+        try:
+            msg = json.loads(message)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(msg, dict):
+            return
+        kind = msg.get('type')
+        if kind in ('TranscriptText', 'TranscriptInterim'):
+            if msg.get('data'):
+                self.pending = msg['data']
+        elif kind == 'TranscriptEndpoint':
+            self.flush()
+            if closing:
+                self.endpoint_after_close = True
+        elif kind == 'TranscriptError':
+            self.flush()
+            self.error = msg.get('description') or msg.get('error_code') or 'unknown transcription error'
+        elif kind == 'error':
+            self.flush()
+            self.error = msg.get('message') or 'server error'
+
+    def flush(self):
+        if self.pending.strip():
+            self.final.append(self.pending.strip())
+        self.pending = ''
+
+    def text(self):
+        return ' '.join(self.final + ([self.pending.strip()] if self.pending.strip() else []))
+
+
+def transcribe(pcm, logins, language, pace=PACE):
+    token, login = claude_token(logins)
+    say(f'{len(pcm) / RATE / 2:.1f}s of audio, Claude Code login in {login}')
+    headers = {'Authorization': 'Bearer ' + token, 'User-Agent': f'claude-cli/{claude_version()} (external, cli)',
+               'x-app': 'cli', 'anthropic-client-platform': 'claude_code_cli'}
+    try:
+        ws = WS(API_HOST, f'{VOICE_PATH}?{voice_query(language)}', headers)
+    except OSError as e:
+        raise Failed(f"couldn't reach voice_stream: {e}")
+    del token, headers
+    tr = Transcript()
+    try:
+        ws.send_text('{"type":"KeepAlive"}')
+        step, start = CHUNK_MS / 1000 / pace, time.monotonic()
+        for i, chunk in enumerate(chunks(pcm)):
+            ws.send_binary(chunk)
+            while (msg := ws.recv(0)) is not None:
+                tr.feed(msg)
+            delay = start + (i + 1) * step - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+        ws.send_text('{"type":"CloseStream"}')
+        # Wait while text keeps coming; stop at the final endpoint, on close, or after IDLE_S of nothing.
+        cap, idle = time.monotonic() + 30 + len(pcm) / RATE / 2, time.monotonic() + IDLE_S
+        while not tr.endpoint_after_close and time.monotonic() < min(cap, idle):
+            try:
+                msg = ws.recv(1.0)
+            except EOFError:
+                break
+            if msg is not None:
+                tr.feed(msg, closing=True)
+                idle = time.monotonic() + IDLE_S
+    except (OSError, EOFError) as e:
+        if not tr.text():
+            raise Failed(f'voice_stream connection lost: {e}')
+    finally:
+        ws.close()
+    if tr.error and not tr.text():
+        raise Failed('voice_stream: ' + tr.error)
+    return tr.text()
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog='velcro-transcribe', description='Audio file to text with your Claude Code login.')
+    p.add_argument('file')
+    p.add_argument('--lang', default='en', help='language spoken, e.g. en, ko, ja (en)')
+    p.add_argument('--login', action='append', type=lambda s: Path(s).expanduser(),
+                   help='Claude Code config folder to take the login from; repeat to try several '
+                        '(default: $CLAUDE_CONFIG_DIR or ~/.claude)')
+    a = p.parse_args(argv)
+    path = Path(a.file).expanduser()
+    if not path.is_file():
+        say(f'no such file: {path}')
+        return 1
+    try:
+        text = transcribe(to_pcm(path), a.login or default_logins(), a.lang)
+    except Failed as e:
+        say(e)
+        return 1
+    if not text.strip():
+        say('no speech heard')
+        return 1
+    print(text.strip())
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
