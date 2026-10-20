@@ -67,9 +67,15 @@ class Login(unittest.TestCase):
 
     def test_only_the_folders_given_are_read(self):
         asked = []
-        vt.claude_token([self.tmp / 'x'], now=self.now, read=lambda d: asked.append(d) or
-                        {'accessToken': SECRET, 'expiresAt': (self.now + 3600) * 1000})
+        vt.claude_token([self.tmp / 'x'], now=self.now, sources=[lambda d: asked.append(d) or
+                        {'accessToken': SECRET, 'expiresAt': (self.now + 3600) * 1000}])
         self.assertEqual(asked, [self.tmp / 'x'])
+
+    def test_stale_file_does_not_hide_the_keychain_login(self):
+        stale = {'accessToken': 'old', 'expiresAt': (self.now - 60) * 1000}
+        fresh = {'accessToken': SECRET, 'expiresAt': (self.now + 3600) * 1000}
+        got = vt.claude_token([self.tmp / 'x'], now=self.now, sources=[lambda d: stale, lambda d: fresh])
+        self.assertEqual(got[0], SECRET)
 
 
 class Protocol(unittest.TestCase):

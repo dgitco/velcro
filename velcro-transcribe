@@ -248,19 +248,21 @@ def file_oauth(config_dir):
         return None
 
 
-def claude_token(logins, now=None, read=None):
-    """(access token, login folder) from the first login that hasn't expired. The token stays in this
-    process: it is never printed, written, or renewed. Raises Failed saying what to do otherwise."""
+def claude_token(logins, now=None, sources=(file_oauth, keychain_oauth)):
+    """(access token, login folder) from the first login that hasn't expired, trying the file and then
+    the keychain for each folder (a stale file can sit next to the keychain login Claude Code uses).
+    The token stays in this process: never printed, written, or renewed. Raises Failed otherwise."""
     now = time.time() if now is None else now
-    read = read or (lambda d: file_oauth(d) or keychain_oauth(d))
     expired = []
     for d in logins:
-        oauth = read(d)
-        if not oauth or not oauth.get('accessToken'):
-            continue
-        if (oauth.get('expiresAt') or 0) / 1000 > now + 120:
-            return oauth['accessToken'], str(d)
-        expired.append(str(d))
+        for read in sources:
+            oauth = read(d)
+            if not oauth or not oauth.get('accessToken'):
+                continue
+            if (oauth.get('expiresAt') or 0) / 1000 > now + 120:
+                return oauth['accessToken'], str(d)
+            if str(d) not in expired:
+                expired.append(str(d))
     if expired:
         raise Failed(f"the Claude Code login in {', '.join(expired)} has expired. velcro doesn't renew it "
                      '(that would sign Claude Code out); use Claude Code there once and try again.')
@@ -340,16 +342,21 @@ def transcribe(pcm, logins, language, pace=PACE):
     del token, headers
     tr = Transcript()
     try:
-        ws.send_text('{"type":"KeepAlive"}')
-        step, start = CHUNK_MS / 1000 / pace, time.monotonic()
-        for i, chunk in enumerate(chunks(pcm)):
-            ws.send_binary(chunk)
-            while (msg := ws.recv(0)) is not None:
-                tr.feed(msg)
-            delay = start + (i + 1) * step - time.monotonic()
-            if delay > 0:
-                time.sleep(delay)
-        ws.send_text('{"type":"CloseStream"}')
+        # Losing the stream before all the audio went out means the text would be cut short: fail,
+        # so the fallback (if any) gets the whole file.
+        try:
+            ws.send_text('{"type":"KeepAlive"}')
+            step, start, parts = CHUNK_MS / 1000 / pace, time.monotonic(), chunks(pcm)
+            for i, chunk in enumerate(parts):
+                ws.send_binary(chunk)
+                while (msg := ws.recv(0)) is not None:
+                    tr.feed(msg)
+                delay = start + (i + 1) * step - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+            ws.send_text('{"type":"CloseStream"}')
+        except (OSError, EOFError) as e:
+            raise Failed(f'voice_stream connection lost while sending the audio: {e}')
         # Wait while text keeps coming; stop at the final endpoint, on close, or after IDLE_S of nothing.
         cap, idle = time.monotonic() + 30 + len(pcm) / RATE / 2, time.monotonic() + IDLE_S
         while not tr.endpoint_after_close and time.monotonic() < min(cap, idle):
@@ -360,13 +367,14 @@ def transcribe(pcm, logins, language, pace=PACE):
             if msg is not None:
                 tr.feed(msg, closing=True)
                 idle = time.monotonic() + IDLE_S
-    except (OSError, EOFError) as e:
-        if not tr.text():
-            raise Failed(f'voice_stream connection lost: {e}')
+    except OSError as e:
+        raise Failed(f'voice_stream connection lost: {e}')
     finally:
         ws.close()
-    if tr.error and not tr.text():
+    if tr.error:
         raise Failed('voice_stream: ' + tr.error)
+    if not tr.endpoint_after_close:
+        say('no final endpoint from voice_stream; using the text so far')
     return tr.text()
 
 
