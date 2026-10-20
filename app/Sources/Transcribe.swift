@@ -11,9 +11,13 @@ final class Transcriber: ObservableObject {
 
     func pick() {
         let panel = NSOpenPanel()
+        panel.title = "Transcribe Audio File"
+        panel.message = "velcro copies the text, transcribed with your Claude Code login."
+        panel.prompt = "Transcribe"
+        panel.canChooseDirectories = false
         panel.allowedContentTypes = [.audio]
-        panel.message = "Choose a voice memo or recording. velcro copies its text."
-        NSApp.activate(ignoringOtherApps: true)
+        if #available(macOS 14, *) { NSApp.activate() }
+        else { NSApp.activate(ignoringOtherApps: true) }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         run(url)
     }
