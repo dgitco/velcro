@@ -9,3 +9,4 @@ site/public/sitemap.xml
 site/public/velcro-sha
 site/public/velcro-transcribe
 __pycache__/
+*.p12

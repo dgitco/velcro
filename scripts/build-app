@@ -22,6 +22,7 @@ out=$root/build
 app=$out/velcro.app
 zip=$out/velcro-$version.zip
 
+[[ -n $SIGN_P12 ]] && SIGN_P12=${SIGN_P12:A}   # before the cd below
 cd $root/app
 xcodegen generate --quiet
 xcodebuild -project velcro.xcodeproj -scheme velcro -configuration Release \
