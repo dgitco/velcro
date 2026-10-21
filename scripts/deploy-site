@@ -30,6 +30,8 @@ print -l "version=$version" "zip=${zip:t}" "zip_sha256=$(sha $zip)" "cli_sha256=
 print "/download /${zip:t} 302" >$pub/_redirects
 # The version search engines see in the page's structured data.
 sed -i '' -E "s/\"softwareVersion\": *\"[^\"]*\"/\"softwareVersion\": \"$version\"/" $pub/index.html
+# ... and the one people see under the title.
+sed -i '' -E "s|<span data-version>[^<]*</span>|<span data-version>$version</span>|" $pub/index.html
 
 # sitemap.xml: every page, dated by its last commit (today if it has none yet).
 site=https://velcro.dgit.co
