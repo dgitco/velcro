@@ -8,5 +8,6 @@ site/public/latest
 site/public/sitemap.xml
 site/public/velcro-sha
 site/public/velcro-transcribe
+site/public/velcro-recordings
 __pycache__/
 *.p12

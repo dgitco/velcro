@@ -19,6 +19,7 @@ It also does things that don't need a NAS at all:
 - **[Voice recorder import](#import-from-a-voice-recorder):** plug in a USB recorder and its recordings are copied to any folder you choose, checked by SHA-256, then cleared from the recorder
 - **[Send to an inbox](#send-to-an-inbox):** save a recent screenshot or file to a folder (a share, Dropbox, Syncthing) and copy its path, even the path a server sees
 - **[Mac mic](#lend-your-macs-microphone-to-a-server):** lend your Mac's microphone to a Linux machine you use over SSH, so voice input there (Claude Code's `/voice`) hears you; it's open only while something there records
+- **[Process recordings](#process-recordings):** on a server that sees the recordings folder, transcribe each imported recording and hand it to your own tidy and deliver commands, retrying failures
 - **[Transcribe](#transcribe-a-voice-memo):** turn an audio file, like a Slack voice memo, into text with the speech-to-text Claude Code's `/voice` uses, signed in as you
 
 ## Install
@@ -146,6 +147,25 @@ velcro transcribe --json memo.m4a          # {"engine":"claude","file":"…","te
 - In the menu, **Transcribe Audio File…** does the same for a file you pick and copies the text; a failure comes back as a notification.
 - On a Linux machine there is no app: put `velcro` and `velcro-transcribe` from this repository side by side in `~/.local/bin` and run `velcro transcribe` there.
 
+## Process recordings
+
+`velcro import` puts recordings in a folder and writes one line per file to `.velcro-import.jsonl` there. `velcro recordings run` takes it from there, for each recording in turn: check the file against the SHA-256 the import wrote, transcribe it, then hand the text to your own commands, one to tidy it up (notes, a summary) and one to deliver it (to whoever should have it). It's meant for a machine that sees the folder all the time, like a server with the share mounted, run from a timer.
+
+```sh
+velcro set recordings.dir /mnt/nas/me/recordings       # the folder velcro import fills (default: import.dest)
+velcro set recordings.engine "whisper-cli -nt -f"      # or claude (the default): velcro transcribe, your login
+velcro set recordings.tidy ~/bin/tidy-recording        # optional
+velcro set recordings.deliver ~/bin/deliver-recording  # optional
+velcro recordings                                      # what is waiting, and why
+velcro recordings run                                  # do it now (a timer runs this)
+```
+
+- **Engine.** `claude` sends the audio through `velcro transcribe` (see above; for long meetings a local engine is kinder to your account). Any other value is a command line that prints the text: `{file}` in it is the recording (otherwise the file goes last) and `{json}` a file it may write with details, which velcro keeps.
+- **Where things go.** `<recordings.out>/<name>.txt` and `<name>.json` (default `recordings.out`: `_velcro` inside the folder). The JSON is written last and marks the recording transcribed. Nothing in the recordings folder is changed or deleted.
+- **Hooks.** The tidy and deliver commands run with `VELCRO_RECORDING` (the audio), `VELCRO_RECORD` (its line from the import, JSON), `VELCRO_TRANSCRIPT`, `VELCRO_TRANSCRIPT_JSON` and `VELCRO_OUT`; deliver also gets `VELCRO_TIDIED`, what tidy printed. What each prints is kept as `<name>.tidy.txt` and `<name>.deliver.txt`; exit status 0 means done.
+- **Failures.** A step that fails is tried again after 10, 20, 40 minutes and so on, at most 6 hours apart, without redoing the steps before it. From the third failure, `recordings.alert` (a command) runs with one line of text, at most once a day per file and step. Other recordings carry on meanwhile.
+- One run at a time; a run starts no new step after 40 minutes, the next run picks up. `recordings.since` skips everything imported before a date, so a new setup doesn't redo old recordings.
+
 ## Settings
 
 `velcro settings` shows them all; `velcro set <key> [value ...]` changes one, and `velcro set <key>` puts the default back. They're kept in `~/.config/velcro/settings`:
@@ -167,6 +187,14 @@ velcro transcribe --json memo.m4a          # {"engine":"claude","file":"…","te
 | `transcribe.lang` | `en` | language spoken in files for `velcro transcribe`, like `ko` |
 | `transcribe.login` | `~/.claude` | Claude Code folder whose login to use; several are tried in order |
 | `transcribe.fallback` | | command run with the file when Claude can't transcribe it; none reports the failure |
+| `recordings.dir` | `import.dest` | folder with `.velcro-import.jsonl` that `velcro recordings` works through |
+| `recordings.out` | `<recordings.dir>/_velcro` | where transcripts and hook output go |
+| `recordings.engine` | `claude` | `claude`, or a command line that prints the text (`{file}`, `{json}`) |
+| `recordings.tidy` | | command run after transcribing |
+| `recordings.deliver` | | command run after tidying |
+| `recordings.alert` | | command run with one line of text from a step's third failure on |
+| `recordings.since` | | only recordings imported at or after this date or time |
+| `recordings.timeout` | 1800 s + half the recording | seconds the engine may take; raise it if your engine first waits for a busy GPU |
 
 ## How it works
 
