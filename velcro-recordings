@@ -33,6 +33,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -68,6 +69,24 @@ def command(line, **fill):
 class _Keep(dict):
     def __missing__(self, key):  # an unknown {word} stays as typed
         return '{' + key + '}'
+
+
+def run_limited(argv, timeout, env=None):
+    """subprocess.run with a time limit that stops the whole process group, so an engine's own children
+    (a converter, a container client) don't outlive it."""
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         env=env, start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGTERM)
+        try:
+            p.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.communicate()
+        raise
+    return subprocess.CompletedProcess(argv, p.returncode, out, err)
 
 
 def put(path, data):
@@ -154,7 +173,7 @@ class Run:
             got = sha256(p['audio'])
             if got != rec['sha256']:
                 raise RuntimeError(f"{rec['file']}: SHA-256 doesn't match the import record")
-        limit = 1800 + float(rec.get('duration_s') or 3 * 3600) * 0.5
+        limit = self.a.timeout or 1800 + float(rec.get('duration_s') or 3 * 3600) * 0.5
         p['engine_json'].unlink(missing_ok=True)
         t0 = time.time()
         if self.a.engine == 'claude':
@@ -164,7 +183,7 @@ class Run:
             if not has_file:
                 argv.append(str(p['audio']))
         try:
-            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=limit)
+            r = run_limited(argv, limit)
         except subprocess.TimeoutExpired:
             raise RuntimeError(f'the engine took over {round(limit / 60)} min, stopped')
         if r.returncode:
@@ -196,8 +215,7 @@ class Run:
             env['VELCRO_TIDIED'] = str(p['tidy']) if p['tidy'].exists() else ''
         argv, _ = command(getattr(self.a, step))
         try:
-            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env,
-                               timeout=HOOK_TIMEOUT_S)
+            r = run_limited(argv, HOOK_TIMEOUT_S, env)
         except subprocess.TimeoutExpired:
             raise RuntimeError(f'{step} took over {HOOK_TIMEOUT_S // 60} min, stopped')
         if r.returncode:
@@ -298,6 +316,8 @@ def main(argv=None):
     p.add_argument('--deliver', default='', help='command run after tidying')
     p.add_argument('--alert', default='', help='command run with a line of text from the third failure on')
     p.add_argument('--since', default='', help='only recordings imported at or after this time (2026-10-21T00:00)')
+    p.add_argument('--timeout', type=lambda v: float(v) if v else 0, default=0,
+                   help='seconds the engine may take (default 1800 + half the recording)')
     p.add_argument('--budget', type=float, default=40 * 60, help='seconds after which no new step starts (2400)')
     a = p.parse_args(argv)
     if not Path(a.dir).is_dir():

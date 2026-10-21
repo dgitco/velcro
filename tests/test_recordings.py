@@ -206,6 +206,25 @@ class Failures(Base):
         self.assertFalse((self.out / 'b.json').exists())
 
 
+    def test_timeout_stops_the_engine_and_its_children(self):
+        self.add('t.WAV')
+        pidfile = self.tmp / 'child.pid'
+        self.engine = script(self.bin / 'slow', f'sleep 60 & echo $! > {pidfile}; wait\n')
+        t0 = time.time()
+        self.run_helper('--timeout', '1')
+        self.assertLess(time.time() - t0, 20)
+        self.assertIn('took over', self.state_doc()['failures']['t.WAV']['error'])
+        child = int(pidfile.read_text())
+        for _ in range(50):
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail('the engine\'s child kept running')
+
+
 class Command(Base):
     """velcro recordings hands the settings to the helper."""
 

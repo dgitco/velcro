@@ -194,6 +194,7 @@ velcro recordings run                                  # do it now (a timer runs
 | `recordings.deliver` | | command run after tidying |
 | `recordings.alert` | | command run with one line of text from a step's third failure on |
 | `recordings.since` | | only recordings imported at or after this date or time |
+| `recordings.timeout` | 1800 s + half the recording | seconds the engine may take; raise it if your engine first waits for a busy GPU |
 
 ## How it works
 

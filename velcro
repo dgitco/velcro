@@ -372,10 +372,12 @@ cmd_env() {
 #   recordings.deliver  = ~/bin/deliver             command run after tidying
 #   recordings.alert    = ~/bin/alert               command run with a line of text from the 3rd failure on
 #   recordings.since    = 2026-10-21                only recordings imported at or after this time
+#   recordings.timeout  = 10800                     seconds the engine may take (1800 + half the recording)
 
 KEYS=(import.dest import.ext import.folder import.delete import.auto recorder send.inbox send.keep map
   mic.host mic.on mic.warm transcribe.lang transcribe.login transcribe.fallback
-  recordings.dir recordings.out recordings.engine recordings.tidy recordings.deliver recordings.alert recordings.since)
+  recordings.dir recordings.out recordings.engine recordings.tidy recordings.deliver recordings.alert recordings.since
+  recordings.timeout)
 typeset -A DEFAULTS=(
   import.ext 'wav mp3 m4a aac flac wma ogg'
   import.delete yes
@@ -437,6 +439,7 @@ cmd_set() {
       transcribe.lang) [[ $v == [a-z][a-z](|-[A-Za-z][A-Za-z]) ]] || { print -u2 "transcribe.lang is a language code, like en or ko"; return 2; } ;;
       transcribe.login) [[ $v == (/|\~/)?* ]] || { print -u2 "transcribe.login is a Claude Code folder, like ~/.claude"; return 2; } ;;
       recordings.(dir|out)) [[ $v == (/|\~/)?* ]] || { print -u2 "$key is a folder, like /mnt/nas/me/recordings"; return 2; } ;;
+      recordings.timeout) [[ $v == <1-> ]] || { print -u2 "recordings.timeout is a number of seconds"; return 2; } ;;
       recordings.since) [[ $v == <1900-2999>-<01-12>-<01-31>* ]] || { print -u2 "recordings.since is a date or time, like 2026-10-21 or 2026-10-21T09:00"; return 2; } ;;
       recorder) [[ $v == (uuid|name):?* ]] || { print -u2 "recorder is uuid:<VolumeUUID> or name:<volume name>"; return 2; } ;;
     esac
@@ -1104,7 +1107,7 @@ cmd_recordings() {
   [[ $OSTYPE == darwin* ]] && state=$SUPPORT || state=${XDG_STATE_HOME:-$HOME/.local/state}/velcro
   py=$(transcribe_python) || return 1
   "$py" "$RECORDINGS_HELPER" $sub --dir "$dir" --out "$out" --state "$state" --velcro "$SELF" \
-    --engine "$(setting recordings.engine)" --lang "$(setting transcribe.lang)" --since "$(setting recordings.since)" \
+    --engine "$(setting recordings.engine)" --lang "$(setting transcribe.lang)" --since "$(setting recordings.since)" --timeout "$(setting recordings.timeout)" \
     --tidy "$(setting recordings.tidy)" --deliver "$(setting recordings.deliver)" --alert "$(setting recordings.alert)"
 }
 
@@ -1164,6 +1167,8 @@ settings ($SETTINGS):
   recordings.deliver   command run after tidying, the same plus VELCRO_TIDIED
   recordings.alert     command run with one line of text when a step fails a 3rd time (once a day)
   recordings.since     only recordings imported at or after this time, e.g. 2026-10-21
+  recordings.timeout   seconds the engine may take before it is stopped (1800 + half the length);
+                       raise it if the engine waits for a busy GPU first
 
 config: $CONF
 EOF
