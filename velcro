@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.8.1
+VERSION=0.9.0
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -363,11 +363,13 @@ cmd_env() {
 #   mic.on        = no                              send it while something there records
 #   mic.warm      = 0                               seconds the mic stays open after a recording
 #   transcribe.lang     = en                        language spoken in files for "velcro transcribe"
+#   transcribe.engine   = claude codex              engines to try, in order, each if signed in
 #   transcribe.login    = ~/.claude                 Claude Code folder whose login it uses; may repeat
-#   transcribe.fallback = whisper-cli -f            command run with the file when Claude fails; empty = none
+#   transcribe.codex    = ~/.codex                  Codex folder whose ChatGPT login it uses
+#   transcribe.fallback = whisper-cli -f            command run with the file when the engines fail; empty = none
 #   recordings.dir      = /mnt/nas/me/recordings    folder with .velcro-import.jsonl (default: import.dest)
 #   recordings.out      = /mnt/nas/me/transcripts   where transcripts go (default: <recordings.dir>/_velcro)
-#   recordings.engine   = whisper-cli -nt -f        a command line printing the text ({file} {json}), or claude
+#   recordings.engine   = whisper-cli -nt -f        a command line printing the text ({file} {json}), claude or codex
 #   recordings.tidy     = ~/bin/tidy                command run after transcribing (VELCRO_* variables)
 #   recordings.deliver  = ~/bin/deliver             command run after tidying
 #   recordings.alert    = ~/bin/alert               command run with a line of text from the 3rd failure on
@@ -375,7 +377,7 @@ cmd_env() {
 #   recordings.timeout  = 10800                     seconds the engine may take (1800 + half the recording)
 
 KEYS=(import.dest import.ext import.folder import.delete import.auto recorder send.inbox send.keep map
-  mic.host mic.on mic.warm transcribe.lang transcribe.login transcribe.fallback
+  mic.host mic.on mic.warm transcribe.lang transcribe.engine transcribe.login transcribe.codex transcribe.fallback
   recordings.dir recordings.out recordings.engine recordings.tidy recordings.deliver recordings.alert recordings.since
   recordings.timeout)
 typeset -A DEFAULTS=(
@@ -386,6 +388,7 @@ typeset -A DEFAULTS=(
   mic.warm 0
   send.keep 14
   transcribe.lang en
+  transcribe.engine 'claude codex'
 )
 
 # Every value of <key>, one per line, or its default when the file has none.
@@ -424,7 +427,7 @@ cmd_set() {
   [[ $1 == --add ]] && { append=1; shift; }
   local key=$1 v line; shift 2>/dev/null
   (( ${KEYS[(Ie)$key]} )) || { print -u2 "unknown setting: $key (one of: $KEYS)"; return 2; }
-  [[ $key == (transcribe.(fallback|lang)|recordings.*) ]] && (( $# > 1 )) &&
+  [[ $key == (transcribe.(fallback|lang|codex)|recordings.*) ]] && (( $# > 1 )) &&
     { print -u2 "$key takes one value; quote a command line: velcro set $key \"whisper-cli -nt -f\""; return 2; }
   for v in "$@"; do
     case $key in
@@ -437,6 +440,8 @@ cmd_set() {
       map) [[ $v == (/|\~/)?*' -> '/* ]] || { print -u2 "map looks like: /Volumes/home -> /mnt/nas/me  (the left side may start with ~/)"; return 2; } ;;
       transcribe.lang) [[ $v == [a-z][a-z](|-[A-Za-z][A-Za-z]) ]] || { print -u2 "transcribe.lang is a language code, like en or ko"; return 2; } ;;
       transcribe.login) [[ $v == (/|\~/)?* ]] || { print -u2 "transcribe.login is a Claude Code folder, like ~/.claude"; return 2; } ;;
+      transcribe.codex) [[ $v == (/|\~/)?* ]] || { print -u2 "transcribe.codex is a Codex folder, like ~/.codex"; return 2; } ;;
+      transcribe.engine) [[ $v == (claude|codex) && ${@[(Ie)$v]} == ${@[(ie)$v]} ]] || { print -u2 "transcribe.engine is claude, codex, or both in the order to try: velcro set transcribe.engine codex claude"; return 2; } ;;
       recordings.(dir|out)) [[ $v == (/|\~/)?* ]] || { print -u2 "$key is a folder, like /mnt/nas/me/recordings"; return 2; } ;;
       recordings.timeout) [[ $v == <1-> ]] || { print -u2 "recordings.timeout is a number of seconds"; return 2; } ;;
       recordings.since) [[ $v == <1900-2999>-<01-12>-<01-31>* ]] || { print -u2 "recordings.since is a date or time, like 2026-10-21 or 2026-10-21T09:00"; return 2; } ;;
@@ -1026,9 +1031,10 @@ cmd_mic() {
 }
 
 # Transcribe: an audio file (a voice memo from Slack, a recording) to text through the speech-to-text
-# Claude Code's /voice uses, with the user's own Claude Code login. velcro-transcribe does the talking;
-# this adds the settings, the optional fallback command, and what velcro.app needs. The login is never
-# renewed, printed or sent anywhere but Anthropic. voice_stream isn't a public API: own login, own audio.
+# Claude Code's /voice uses, or ChatGPT's that Codex uses, with the user's own login to each (whichever is
+# signed in, in transcribe.engine order). velcro-transcribe does the talking; this adds the settings, the
+# optional fallback command, and what velcro.app needs. Logins are never renewed or printed, and each goes
+# only to its own company. Neither is a public API: own login, own audio.
 
 # python3, without setting off the "install the command line developer tools" dialog on a Mac.
 transcribe_python() {
@@ -1040,35 +1046,41 @@ transcribe_python() {
   return 1
 }
 
-# velcro transcribe [--lang <code>] [--no-fallback] [--json] <file>: the text on stdout.
+# velcro transcribe [--lang <code>] [--engine claude|codex] [--no-fallback] [--json] <file>: the text on stdout.
 cmd_transcribe() {
   local lang=$(setting transcribe.lang) fallback=$(setting transcribe.fallback) json=
+  local -a engines=(${=$(setting_all transcribe.engine)})
   while [[ $1 == -* ]]; do
     case $1 in
       --lang) [[ $2 == [a-z][a-z](|-[A-Za-z][A-Za-z]) ]] || { print -u2 -- "--lang takes a language code, like en or ko"; return 2; }
               lang=$2; shift 2 ;;
+      --engine) [[ $2 == (claude|codex) ]] || { print -u2 -- "--engine is claude or codex"; return 2; }
+                engines=($2); shift 2 ;;
       --no-fallback) fallback=; shift ;;
       --json) json=1; shift ;;
       --) shift; break ;;
       *) print -u2 "unknown option: $1"; return 2 ;;
     esac
   done
-  (( $# == 1 )) || { print -u2 "usage: velcro transcribe [--lang <code>] [--no-fallback] [--json] <audio file>"; return 2; }
+  (( $# == 1 )) || { print -u2 "usage: velcro transcribe [--lang <code>] [--engine claude|codex] [--no-fallback] [--json] <audio file>"; return 2; }
   local file=${1:a}
   [[ -f $file ]] || { print -u2 "no such file: $1"; return 1; }
   [[ -r $TRANSCRIBE_HELPER ]] || { print -u2 "velcro-transcribe is missing next to $SELF; install velcro again"; return 1; }
-  local -a args=(--lang "$lang") cmd
-  local login py text= engine=claude rc
+  local -a args=(--lang "$lang" --engine "${(j:,:)${(@u)engines}}") cmd  # (u): set --add can repeat one
+  local login py text= engine= rc codex=$(folder_setting transcribe.codex)
   for login in "${(@f)$(setting_all transcribe.login)}"; do
     [[ -n $login ]] && args+=(--login "${login/#\~/$HOME}")
   done
+  [[ -n $codex ]] && args+=(--codex "$codex")
   # The helper's messages go to the terminal afterwards; velcro.app gets a notification instead.
   local err=$(mktemp "${TMPDIR:-/tmp}/velcro-transcribe.XXXXXX")
   if py=$(transcribe_python 2>>"$err"); then
-    text=$("$py" "$TRANSCRIBE_HELPER" "${args[@]}" -- "$file" 2>>"$err"); rc=$?
+    text=$("$py" "$TRANSCRIBE_HELPER" "${args[@]}" --engine-file "$err.engine" -- "$file" 2>>"$err"); rc=$?
+    (( rc )) || { [[ -s $err.engine ]] && engine=$(<"$err.engine") || engine=${engines[1]}; }
   else
     rc=1
   fi
+  rm -f "$err.engine"
   if (( rc )) && [[ -n $fallback ]]; then
     # The setting is a command line; the file goes last. A leading ~ means the home folder.
     cmd=("${(Q@)${(z)fallback}}"); cmd[1]=${cmd[1]/#\~/$HOME}
@@ -1105,7 +1117,7 @@ cmd_recordings() {
   [[ -n $out ]] || out=$dir/_velcro
   [[ $OSTYPE == darwin* ]] && state=$SUPPORT || state=${XDG_STATE_HOME:-$HOME/.local/state}/velcro
   # No default engine: long recordings through someone's Claude login should be a choice, not a default.
-  [[ -n $(setting recordings.engine) ]] || { print -u2 "choose an engine first: velcro set recordings.engine \"<command that prints the text>\" (or claude, which uses your Claude Code login)"; return 1; }
+  [[ -n $(setting recordings.engine) ]] || { print -u2 "choose an engine first: velcro set recordings.engine \"<command that prints the text>\" (or claude or codex, which use your own login)"; return 1; }
   py=$(transcribe_python) || return 1
   "$py" "$RECORDINGS_HELPER" $sub --dir "$dir" --out "$out" --state "$state" --velcro "$SELF" \
     --engine "$(setting recordings.engine)" --lang "$(setting transcribe.lang)" --since "$(setting recordings.since)" --timeout "$(setting recordings.timeout)" \
@@ -1134,8 +1146,9 @@ velcro $VERSION — keep network shares stuck to your Mac
                              input there (Claude Code /voice); open only while it records
   velcro mic off | status | remove
   velcro transcribe <file>   audio file to text, through the speech-to-text Claude Code's /voice
-                             uses, with your own Claude Code login (--lang ko, --json, --no-fallback).
-                             Not a public API: only your own login and audio, never shared
+                             uses or ChatGPT's (Codex), with your own login (--lang ko, --json,
+                             --engine codex, --no-fallback). Not a public API: only your own login
+                             and audio, never shared
   velcro recordings [run]    what is waiting in recordings.dir; run transcribes, tidies and
                              delivers it (engine and hook commands below), retrying failures
   velcro settings            show settings;  velcro set [--add] <key> [value ...] to change one
@@ -1155,14 +1168,21 @@ settings ($SETTINGS):
   mic.warm      seconds the microphone stays open after a recording, so the next one starts
                 at once (0)
   transcribe.lang      language spoken in the files, e.g. ko (${DEFAULTS[transcribe.lang]})
+  transcribe.engine    engines to try in order, each only if you're signed in to it
+                       (${DEFAULTS[transcribe.engine]}): claude is Claude Code's, codex ChatGPT's with
+                       Codex's ChatGPT login (it keeps the audio 30 days). Just one: velcro set
+                       transcribe.engine claude
   transcribe.login     Claude Code folder whose login to use; repeat to try several
                        (\$CLAUDE_CONFIG_DIR or ~/.claude). It is read, never renewed
-  transcribe.fallback  command to run with the file when Claude can't transcribe it, printing
+  transcribe.codex     Codex folder whose ChatGPT login to use (\$CODEX_HOME or ~/.codex). Read,
+                       never renewed; an API key is never used
+  transcribe.fallback  command to run with the file when no engine can transcribe it, printing
                        the text, e.g. "whisper-cli -nt -f" (none: the failure is reported)
   recordings.dir       folder velcro import fills, with .velcro-import.jsonl (import.dest)
   recordings.out       where transcripts and hook output go (<recordings.dir>/_velcro)
   recordings.engine    a command line that prints the text: {file} is the recording (else it goes
-                       last), {json} a file it may write; or claude (velcro transcribe, your login).
+                       last), {json} a file it may write; or claude or codex (velcro transcribe
+                       with that engine, your login).
                        No default: velcro recordings waits until one is chosen
   recordings.tidy      command run after transcribing, with VELCRO_RECORDING, VELCRO_TRANSCRIPT,
                        VELCRO_TRANSCRIPT_JSON, VELCRO_RECORD and VELCRO_OUT; its output is kept

@@ -20,7 +20,7 @@ It also does things that don't need a NAS at all:
 - **[Send to an inbox](#send-to-an-inbox):** save a recent screenshot or file to a folder (a share, Dropbox, Syncthing) and copy its path, even the path a server sees
 - **[Mac mic](#lend-your-macs-microphone-to-a-server):** lend your Mac's microphone to a Linux machine you use over SSH, so voice input there (Claude Code's `/voice`) hears you; it's open only while something there records
 - **[Process recordings](#process-recordings):** on a server that sees the recordings folder, transcribe each imported recording and hand it to your own tidy and deliver commands, retrying failures
-- **[Transcribe](#transcribe-a-voice-memo):** turn an audio file, like a Slack voice memo, into text with the speech-to-text Claude Code's `/voice` uses, signed in as you
+- **[Transcribe](#transcribe-a-voice-memo):** turn an audio file, like a Slack voice memo, into text with the speech-to-text Claude Code's `/voice` uses, or ChatGPT's through Codex, signed in as you
 
 ## Install
 
@@ -131,19 +131,22 @@ velcro mic off
 
 ## Transcribe a voice memo
 
-The other way round from Mac mic: you already have the audio, a voice memo from Slack or a recording, and want the text. `velcro transcribe` sends the file to the same speech-to-text Claude Code's `/voice` uses, with your own Claude Code login, and prints what it heard.
+The other way round from Mac mic: you already have the audio, a voice memo from Slack or a recording, and want the text. `velcro transcribe` sends the file to the same speech-to-text Claude Code's `/voice` uses, with your own Claude Code login, or to ChatGPT's with the ChatGPT login Codex keeps, and prints what it heard.
 
 ```sh
 velcro transcribe memo.m4a                 # the text, on stdout
 velcro transcribe --lang ko memo.m4a       # language spoken (default en; or velcro set transcribe.lang ko)
 velcro transcribe --json memo.m4a          # {"engine":"claude","file":"…","text":"…"}
+velcro transcribe --engine codex memo.m4a  # only this engine, once
 ```
 
-- **Only your own login, for your own audio.** This is the stream Claude Code itself uses, not a public API, so Anthropic's terms may not cover other uses. Don't point velcro at someone else's login, and don't copy your login to a server or share it.
+- **Two engines, each only if you're signed in:** `claude` (Claude Code) and `codex` (ChatGPT, through the login `codex login` saves in `~/.codex/auth.json`). velcro tries them in `transcribe.engine` order, `claude codex` unless you change it, and moves to the next when one isn't signed in or fails. `velcro set transcribe.engine codex claude` puts Codex first; `velcro set transcribe.engine claude` keeps your audio with Anthropic only.
+- **Only your own login, for your own audio.** Both are what Claude Code and Codex themselves use, not public APIs, so their terms may not cover other uses. Don't point velcro at someone else's login, and don't copy your login to a server or share it.
 - The login is read from `~/.claude` (or `$CLAUDE_CONFIG_DIR`), or the keychain on a Mac, which may ask once to let `security` read "Claude Code-credentials". velcro never renews it (renewing would sign Claude Code out), never prints it, and sends it only to Anthropic. If it has expired, use Claude Code once and try again. `velcro set transcribe.login ~/.claude ~/.claude-work` tries several folders in order.
+- The Codex login is read from `~/.codex/auth.json` (or `$CODEX_HOME`, or `velcro set transcribe.codex <folder>`), the same way: never renewed (that would sign Codex out), never printed, sent only to OpenAI. Only a ChatGPT sign-in is used, never an API key. ChatGPT works out the language itself and **keeps the audio it receives for 30 days**. Long files go in 5-minute pieces (it drops text past about 10 minutes), which needs `ffmpeg`, or `afconvert` on a Mac; without them, an mp3, m4a, ogg, webm or wav under 24 MB goes whole.
 - It needs `python3` (on a Mac, the command line developer tools: `xcode-select --install`). A 16 kHz mono 16-bit WAV goes as is; anything else is converted with `ffmpeg`, or `afconvert` on a Mac (m4a, mp3, aac, wav, caf).
 - It's for memos and short recordings: the file is sent at about four times real time, so a 1-minute memo takes about 15 s.
-- **Fallback (off by default):** `velcro set transcribe.fallback "<command>"` runs that command with the file added at the end whenever Claude can't transcribe it, and prints what it prints, for example a local `whisper-cli -nt -f`. `--no-fallback` skips it once. Without one, the failure is reported as is and nothing else hears your audio.
+- **Fallback (off by default):** `velcro set transcribe.fallback "<command>"` runs that command with the file added at the end whenever no engine can transcribe it, and prints what it prints, for example a local `whisper-cli -nt -f`. `--no-fallback` skips it once. Without one, the failure is reported as is and nothing else hears your audio.
 - In the menu, **Transcribe Audio File…** does the same for a file you pick and copies the text; a failure comes back as a notification.
 - On a Linux machine there is no app: put `velcro` and `velcro-transcribe` from this repository side by side in `~/.local/bin` and run `velcro transcribe` there.
 
@@ -153,14 +156,14 @@ velcro transcribe --json memo.m4a          # {"engine":"claude","file":"…","te
 
 ```sh
 velcro set recordings.dir /mnt/nas/me/recordings       # the folder velcro import fills (default: import.dest)
-velcro set recordings.engine "whisper-cli -nt -f"      # required; or claude: velcro transcribe, your login
+velcro set recordings.engine "whisper-cli -nt -f"      # required; or claude or codex: velcro transcribe, your login
 velcro set recordings.tidy ~/bin/tidy-recording        # optional
 velcro set recordings.deliver ~/bin/deliver-recording  # optional
 velcro recordings                                      # what is waiting, and why
 velcro recordings run                                  # do it now (a timer runs this)
 ```
 
-- **Engine (no default, pick one).** A local engine is the usual choice for meetings. `claude` sends the audio through `velcro transcribe` (see above), which is meant for memos and short recordings; long meetings every day through your login is a bigger ask of a stream that isn't a public API. Any other value is a command line that prints the text: `{file}` in it is the recording (otherwise the file goes last) and `{json}` a file it may write with details, which velcro keeps.
+- **Engine (no default, pick one).** A local engine is the usual choice for meetings. `claude` or `codex` sends the audio through `velcro transcribe --engine` with that engine only (see above), which is meant for memos and short recordings; long meetings every day through your login is a bigger ask of a service that isn't a public API. Any other value is a command line that prints the text: `{file}` in it is the recording (otherwise the file goes last) and `{json}` a file it may write with details, which velcro keeps.
 - **Where things go.** `<recordings.out>/<name>.txt` and `<name>.json` (default `recordings.out`: `_velcro` inside the folder). The JSON is written last and marks the recording transcribed. Nothing in the recordings folder is changed or deleted.
 - **Hooks.** The tidy and deliver commands run with `VELCRO_RECORDING` (the audio), `VELCRO_RECORD` (its line from the import, JSON), `VELCRO_TRANSCRIPT`, `VELCRO_TRANSCRIPT_JSON` and `VELCRO_OUT`; deliver also gets `VELCRO_TIDIED`, what tidy printed. What each prints is kept as `<name>.tidy.txt` and `<name>.deliver.txt`; exit status 0 means done.
 - **Failures.** A step that fails is tried again after 10, 20, 40 minutes and so on, at most 6 hours apart, without redoing the steps before it. From the third failure, `recordings.alert` (a command) runs with one line of text, at most once a day per file and step. Other recordings carry on meanwhile.

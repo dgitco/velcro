@@ -199,7 +199,7 @@ struct MicMenu: View {
     }
 }
 
-/// Audio file to text through the speech-to-text Claude Code's /voice uses.
+/// Audio file to text through the speech-to-text Claude Code's /voice uses, or ChatGPT's (Codex).
 struct TranscribeMenu: View {
     @ObservedObject private var transcriber = Transcriber.shared
 

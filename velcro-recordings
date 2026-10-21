@@ -9,7 +9,7 @@
 Each line of <dir>/.velcro-import.jsonl is one recording. For each one, in order:
 
   1. transcribe: check the file against the SHA-256 the import wrote, then run the engine (no default).
-     --engine claude runs `velcro transcribe` (your Claude Code login); anything else is a command
+     --engine claude or codex runs `velcro transcribe --engine` with it (your own login); anything else is a command
      line run with the file: {file} and {json} in it are replaced by the recording and a JSON file
      the command may write, otherwise the file goes last. The command prints the text.
      Writes <out>/<name>.txt, then <out>/<name>.json (written last: it marks the step done).
@@ -44,6 +44,7 @@ BACKOFF_S, BACKOFF_MAX_S = 600, 6 * 3600
 ALERT_FROM = 3
 HOOK_TIMEOUT_S = 1800
 STEPS = ('transcribe', 'tidy', 'deliver')
+TRANSCRIBE = ('claude', 'codex')  # engines velcro transcribe runs
 
 
 def say(*a):
@@ -176,8 +177,8 @@ class Run:
         limit = self.a.timeout or 1800 + float(rec.get('duration_s') or 3 * 3600) * 0.5
         p['engine_json'].unlink(missing_ok=True)
         t0 = time.time()
-        if self.a.engine == 'claude':
-            argv = [self.a.velcro, 'transcribe', '--json'] + (['--lang', self.a.lang] if self.a.lang else []) + [str(p['audio'])]
+        if self.a.engine in TRANSCRIBE:
+            argv = [self.a.velcro, 'transcribe', '--json', '--engine', self.a.engine] + (['--lang', self.a.lang] if self.a.lang else []) + [str(p['audio'])]
         else:
             argv, has_file = command(self.a.engine, file=str(p['audio']), json=str(p['engine_json']))
             if not has_file:
@@ -189,7 +190,7 @@ class Run:
         if r.returncode:
             raise RuntimeError(f'the engine failed (exit {r.returncode}): {r.stderr.strip()[-300:]}')
         text, detail = r.stdout, None
-        if self.a.engine == 'claude':
+        if self.a.engine in TRANSCRIBE:
             detail = json.loads(text)
             text = detail.pop('text', '')
         elif p['engine_json'].exists():
@@ -201,7 +202,7 @@ class Run:
             raise RuntimeError('the engine printed no text')
         p['engine_json'].unlink(missing_ok=True)
         doc = {'file': rec['file'], 'sha256': rec.get('sha256'), 'duration_s': rec.get('duration_s'),
-               'engine': 'claude' if self.a.engine == 'claude' else 'command', 'command': argv[0],
+               'engine': self.a.engine if self.a.engine in TRANSCRIBE else 'command', 'command': argv[0],
                'wall_s': round(time.time() - t0), 'at': now_iso(), 'detail': detail}
         put(p['txt'], text if text.endswith('\n') else text + '\n')
         put(p['json'], json.dumps(doc, ensure_ascii=False, indent=1))  # last: marks the step done
@@ -309,9 +310,9 @@ def main(argv=None):
     p.add_argument('--dir', required=True, help='the folder velcro import writes to (with .velcro-import.jsonl)')
     p.add_argument('--out', required=True, help='where transcripts and hook output go')
     p.add_argument('--state', required=True, help='folder for the failure counts and the lock')
-    p.add_argument('--engine', required=True, help='a command line ({file}, {json}), or claude')
-    p.add_argument('--velcro', default='velcro', help='the velcro command, for --engine claude')
-    p.add_argument('--lang', default='', help='language for --engine claude, e.g. ko')
+    p.add_argument('--engine', required=True, help='a command line ({file}, {json}), or claude or codex')
+    p.add_argument('--velcro', default='velcro', help='the velcro command, for --engine claude or codex')
+    p.add_argument('--lang', default='', help='language for --engine claude or codex, e.g. ko')
     p.add_argument('--tidy', default='', help='command run after transcribing')
     p.add_argument('--deliver', default='', help='command run after tidying')
     p.add_argument('--alert', default='', help='command run with a line of text from the third failure on')

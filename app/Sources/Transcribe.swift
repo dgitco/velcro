@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-/// Transcribe Audio File…: `velcro transcribe <file>` with the user's own Claude Code login, and the
+/// Transcribe Audio File…: `velcro transcribe <file>` with the user's own Claude Code or Codex login, and the
 /// text on the clipboard. The script does the work and reports failures as notifications.
 final class Transcriber: ObservableObject {
     static let shared = Transcriber()
