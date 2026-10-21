@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""velcro-transcribe: an audio file → text, the way Claude Code's /voice does it.
+"""velcro-transcribe: an audio file → text, the way Claude Code's /voice or Codex's voice input does it.
 
-It sends the audio to Claude Code's speech-to-text stream (voice_stream) with your own Claude Code
-login and prints what comes back. `velcro transcribe` runs it; it also runs on its own:
+Two engines, tried in the order given, each only if you're signed in to it:
+  claude  Claude Code's speech-to-text stream (voice_stream), with your own Claude Code login.
+  codex   ChatGPT's transcribe endpoint, with the ChatGPT login Codex keeps in ~/.codex/auth.json.
+`velcro transcribe` runs it; it also runs on its own:
 
-  velcro-transcribe [--lang ko] [--login <claude config dir> ...] <audio file>
+  velcro-transcribe [--lang ko] [--engine claude,codex] [--login <claude config dir> ...]
+                    [--codex <codex home>] <audio file>
 
-The login is read, never refreshed (renewing it here would sign Claude Code out) and never printed.
-voice_stream is what Claude Code itself uses, not a public API: use only your own login, for your
-own audio, and don't share it with other people or servers.
+Logins are read, never refreshed (renewing one here would sign Claude Code or Codex out) and never
+printed. Neither is a public API: use only your own logins, for your own audio, and don't share them
+with other people or servers. ChatGPT keeps the audio it receives for 30 days.
 
 Audio: a 16 kHz mono 16-bit WAV is sent as is; anything else goes through ffmpeg, or afconvert on
-a Mac. Exit status: 0 text on stdout, 1 failed (reason on stderr), 2 usage.
+a Mac. Codex gets the audio in 5-minute pieces, since longer ones come back cut short; without ffmpeg
+a common format (mp3, m4a, ogg, webm, wav) under 24 MB goes to it whole.
+Exit status: 0 text on stdout, 1 failed (reason on stderr), 2 usage.
 """
 import argparse
 import base64
@@ -27,7 +32,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
+import uuid
 import wave
 
 API_HOST = 'api.anthropic.com'
@@ -37,6 +45,13 @@ RATE, CHUNK_MS = 16000, 100
 PACE = 4.0  # send at 4x real time: the server transcribes at about that speed, so faster ends no sooner
 IDLE_S = 10  # after CloseStream, stop when nothing has arrived for this long
 KEYCHAIN = 'Claude Code-credentials'
+ENGINES = ('claude', 'codex')
+CHATGPT_TRANSCRIBE = 'https://chatgpt.com/backend-api/transcribe'
+PIECE_S = 300  # ChatGPT drops text from audio much past 10 minutes (and fails at 25): send 5-minute pieces
+QUIET_S = 15  # cut each piece at the quietest moment in its last QUIET_S seconds, not mid-word
+AS_IS = {'.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.mp4': 'audio/mp4',
+         '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.webm': 'audio/webm'}  # what ChatGPT takes without ffmpeg
+AS_IS_MAX = 24 << 20
 
 
 class Failed(Exception):
@@ -378,26 +393,192 @@ def transcribe(pcm, logins, language, pace=PACE):
     return tr.text()
 
 
+# ---- codex: ChatGPT's transcribe endpoint with Codex's ChatGPT login ----
+
+def jwt_claims(token):
+    """The payload of a JWT, unverified (only to read exp and the account), or {}."""
+    try:
+        part = token.split('.')[1]
+        return json.loads(base64.urlsafe_b64decode(part + '=' * (-len(part) % 4)))
+    except (IndexError, ValueError, TypeError):
+        return {}
+
+
+def default_codex_home():
+    return Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex')
+
+
+def codex_login(home, now=None):
+    """(access token, ChatGPT account id) from the ChatGPT login Codex keeps in <home>/auth.json. Read
+    only: never printed, written, or renewed (renewing rotates the refresh token and signs Codex out).
+    An API key in the same file is never used. Raises Failed otherwise."""
+    now = time.time() if now is None else now
+    path = Path(home) / 'auth.json'
+    try:
+        auth = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise Failed(f'no Codex login in {path}. Sign in to Codex (codex login) with your ChatGPT account first.')
+    except (OSError, ValueError) as e:
+        raise Failed(f"couldn't read the Codex login in {path}: {type(e).__name__}")
+    tokens = auth.get('tokens') if isinstance(auth, dict) else None
+    token = tokens.get('access_token') if isinstance(tokens, dict) else None
+    if not token:
+        raise Failed(f'the Codex login in {path} is not a ChatGPT sign-in (an API key is never used). '
+                     'Sign in to Codex with your ChatGPT account (codex login).')
+    claims = jwt_claims(token)
+    account = tokens.get('account_id') or (claims.get('https://api.openai.com/auth') or {}).get('chatgpt_account_id')
+    if not account:
+        raise Failed(f'the Codex login in {path} has no ChatGPT account; sign in to Codex again (codex login).')
+    if (claims.get('exp') or 0) <= now + 120:
+        raise Failed(f"the Codex login in {path} has expired. velcro doesn't renew it (that would sign Codex out); "
+                     'use Codex once and try again.')
+    return token, account
+
+
+def wav_bytes(pcm):
+    """16 kHz mono 16-bit PCM as a WAV file."""
+    return (b'RIFF' + struct.pack('<I', 36 + len(pcm)) + b'WAVEfmt ' + struct.pack('<IHHIIHH', 16, 1, 1, RATE, RATE * 2, 2, 16)
+            + b'data' + struct.pack('<I', len(pcm)) + pcm)
+
+
+def quietest(pcm, start, end, window=RATE // 10):
+    """The sample index in [start, end) where the quietest 100 ms window begins."""
+    best, at = None, start
+    for i in range(start, max(start + 1, end - window), window // 2):
+        frame = pcm[2 * i:2 * (i + window)]
+        loud = sum(abs(v) for v in struct.unpack(f'<{len(frame) // 2}h', frame[:len(frame) // 2 * 2]))
+        if best is None or loud < best:
+            best, at = loud, i
+    return at
+
+
+def pieces(pcm, seconds=PIECE_S, quiet=QUIET_S):
+    """PCM cut into pieces of at most `seconds`, each ending at a quiet moment near its end."""
+    total, size, out, pos = len(pcm) // 2, seconds * RATE, [], 0
+    while total - pos > size:
+        cut = quietest(pcm, pos + size - quiet * RATE, pos + size)
+        cut = cut if cut > pos else pos + size
+        out.append(pcm[2 * pos:2 * cut])
+        pos = cut
+    out.append(pcm[2 * pos:])
+    return out
+
+
+def multipart(fields, name, filename, content_type, data):
+    boundary = uuid.uuid4().hex
+    body = b''.join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+                    for k, v in fields.items())
+    body += (f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+             f'Content-Type: {content_type}\r\n\r\n').encode() + data + f'\r\n--{boundary}--\r\n'.encode()
+    return f'multipart/form-data; boundary={boundary}', body
+
+
+def chatgpt_transcribe(token, account, filename, content_type, data, opener=urllib.request.urlopen):
+    """The text of one audio file. ChatGPT works out the language itself (a language field is ignored)."""
+    ctype, body = multipart({}, 'file', filename, content_type, data)
+    req = urllib.request.Request(CHATGPT_TRANSCRIBE, data=body, method='POST', headers={
+        'Authorization': 'Bearer ' + token, 'ChatGPT-Account-Id': account, 'Content-Type': ctype,
+        'originator': 'codex_cli_rs', 'User-Agent': 'velcro-transcribe'})
+    try:
+        with opener(req, timeout=300) as r:
+            reply = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read()[:300].decode(errors='replace').strip()
+        raise Failed(f'ChatGPT transcribe answered {e.code}' + (f': {detail}' if detail else '')
+                     + (' (sign in to Codex again)' if e.code in (401, 403) else ''))
+    except (OSError, ValueError) as e:
+        raise Failed(f"couldn't reach ChatGPT transcribe: {e}")
+    if not isinstance(reply, dict) or not isinstance(reply.get('text'), str):
+        raise Failed('ChatGPT transcribe gave no text')
+    return reply['text'].strip()
+
+
+def codex_transcribe(audio, home, send=chatgpt_transcribe):
+    token, account = codex_login(home)
+    try:
+        pcm = audio.pcm()
+    except Failed as why:
+        # No ffmpeg: a short file in a format ChatGPT reads can still go whole.
+        ctype, size = AS_IS.get(audio.path.suffix.lower()), audio.path.stat().st_size
+        if not ctype or size > AS_IS_MAX:
+            raise why
+        say(f'{str(why).rstrip(".")}; sending the file whole ({size >> 10} KB) to ChatGPT with the Codex login in {home}. '
+            'Past 10 minutes the text may come back cut short.')
+        return send(token, account, audio.path.name, ctype, audio.path.read_bytes())
+    parts = pieces(pcm)
+    say(f'{len(pcm) / RATE / 2:.1f}s of audio, Codex login in {home}' + (f', {len(parts)} pieces' if len(parts) > 1 else ''))
+    texts = [send(token, account, f'{audio.path.stem}-{i + 1}.wav', 'audio/wav', wav_bytes(part))
+             for i, part in enumerate(parts)]
+    return ' '.join(t for t in texts if t)
+
+
+class Audio:
+    """The file, and its PCM once an engine asks for it (converted once, failure remembered)."""
+
+    def __init__(self, path):
+        self.path, self._pcm, self._failed = Path(path), None, None
+
+    def pcm(self):
+        if self._failed:
+            raise self._failed
+        if self._pcm is None:
+            try:
+                self._pcm = to_pcm(self.path)
+            except Failed as e:
+                self._failed = e
+                raise
+        return self._pcm
+
+
+def run_engines(audio, engines, run):
+    """(engine, text) from the first engine in order that gives text; Failed with every reason otherwise."""
+    reasons = []
+    for i, name in enumerate(engines):
+        try:
+            text = run[name](audio)
+            if text.strip():
+                return name, text
+            raise Failed('no speech heard')
+        except Failed as e:
+            reasons.append(f'{name}: {e}')
+            if i + 1 < len(engines):
+                say(f"{name}: {str(e).rstrip('.')}; trying {engines[i + 1]}")
+    raise Failed(reasons[0] if len(reasons) == 1 else 'no engine could transcribe it. ' + ' / '.join(reasons))
+
+
+def engine_list(s):
+    names = [n.strip() for n in s.split(',') if n.strip()]
+    if not names or any(n not in ENGINES for n in names) or len(set(names)) < len(names):
+        raise argparse.ArgumentTypeError(f'a comma-separated list of {", ".join(ENGINES)}')
+    return names
+
+
 def main(argv=None):
-    p = argparse.ArgumentParser(prog='velcro-transcribe', description='Audio file to text with your Claude Code login.')
+    p = argparse.ArgumentParser(prog='velcro-transcribe', description='Audio file to text with your Claude Code or Codex login.')
     p.add_argument('file')
-    p.add_argument('--lang', default='en', help='language spoken, e.g. en, ko, ja (en)')
+    p.add_argument('--lang', default='en', help='language spoken, e.g. en, ko, ja (en); codex works it out itself')
+    p.add_argument('--engine', type=engine_list, default=list(ENGINES),
+                   help='engines to try, in order: claude, codex or both (claude,codex)')
     p.add_argument('--login', action='append', type=lambda s: Path(s).expanduser(),
                    help='Claude Code config folder to take the login from; repeat to try several '
                         '(default: $CLAUDE_CONFIG_DIR or ~/.claude)')
+    p.add_argument('--codex', type=lambda s: Path(s).expanduser(), default=None,
+                   help='Codex home with auth.json (default: $CODEX_HOME or ~/.codex)')
+    p.add_argument('--engine-file', help='write the name of the engine that gave the text here')
     a = p.parse_args(argv)
     path = Path(a.file).expanduser()
     if not path.is_file():
         say(f'no such file: {path}')
         return 1
+    run = {'claude': lambda audio: transcribe(audio.pcm(), a.login or default_logins(), a.lang),
+           'codex': lambda audio: codex_transcribe(audio, a.codex or default_codex_home())}
     try:
-        text = transcribe(to_pcm(path), a.login or default_logins(), a.lang)
+        engine, text = run_engines(Audio(path), a.engine, run)
     except Failed as e:
         say(e)
         return 1
-    if not text.strip():
-        say('no speech heard')
-        return 1
+    if a.engine_file:
+        Path(a.engine_file).write_text(engine + '\n')
     print(text.strip())
     return 0
 

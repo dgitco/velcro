@@ -99,17 +99,21 @@ class Steps(Base):
         self.assertEqual(json.loads((self.out / 'a.json').read_text())['detail'], {'chunks': 3})
         self.assertEqual([p.name for p in self.out.glob('.*')], [])  # the engine's JSON is not left behind
 
-    def test_claude_engine_runs_velcro_transcribe_json(self):
-        self.add('memo.m4a')
-        fake_velcro = script(self.bin / 'velcro', 'echo "$*" > "$(dirname "$0")/args"; '
-                                                   'echo \'{"engine":"claude","file":"x","text":"안녕하세요"}\'\n')
-        argv = ['run', '--dir', str(self.dir), '--out', str(self.out), '--state', str(self.state),
-                '--engine', 'claude', '--velcro', fake_velcro, '--lang', 'ko']
-        with mock.patch('sys.stdout', io.StringIO()):
-            vr.main(argv)
-        self.assertEqual((self.bin / 'args').read_text().strip(), f'transcribe --json --lang ko {self.dir / "memo.m4a"}')
-        self.assertEqual((self.out / 'memo.txt').read_text(), '안녕하세요\n')
-        self.assertEqual(json.loads((self.out / 'memo.json').read_text())['engine'], 'claude')
+    def test_claude_and_codex_engines_run_velcro_transcribe_json(self):
+        for engine in ('claude', 'codex'):
+            name = f'memo-{engine}.m4a'
+            self.add(name)
+            fake_velcro = script(self.bin / 'velcro', 'echo "$*" > "$(dirname "$0")/args"; '
+                                                       f'echo \'{{"engine":"{engine}","file":"x","text":"안녕하세요"}}\'\n')
+            argv = ['run', '--dir', str(self.dir), '--out', str(self.out), '--state', str(self.state),
+                    '--engine', engine, '--velcro', fake_velcro, '--lang', 'ko']
+            with mock.patch('sys.stdout', io.StringIO()):
+                vr.main(argv)
+            self.assertEqual((self.bin / 'args').read_text().strip(),
+                             f'transcribe --json --engine {engine} --lang ko {self.dir / name}')
+            stem = name[:-4]
+            self.assertEqual((self.out / f'{stem}.txt').read_text(), '안녕하세요\n')
+            self.assertEqual(json.loads((self.out / f'{stem}.json').read_text())['engine'], engine)
 
     def test_since_and_missing_source(self):
         self.add('old.WAV', imported_at='2026-10-20T09:00:00+09:00')
