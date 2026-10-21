@@ -248,6 +248,20 @@ class Command(Base):
         self.assertIn('s.WAV', st.stdout)
         self.assertIn('done', st.stdout)
 
+    def test_no_engine_no_run(self):
+        """Bobby 2026-10-21: claude is never the recorder path's default; without an engine nothing runs."""
+        home = self.tmp / 'home2'
+        (home / '.config/velcro').mkdir(parents=True)
+        env = {k: v for k, v in os.environ.items() if k not in ('XDG_CONFIG_HOME', 'XDG_STATE_HOME')}
+        env['HOME'] = str(home)
+        velcro = ['zsh', str(ROOT / 'velcro')]
+        self.add('n.WAV')
+        subprocess.run(velcro + ['set', 'recordings.dir', str(self.dir)], env=env, check=True)
+        r = subprocess.run(velcro + ['recordings', 'run'], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('choose an engine first', r.stderr)
+        self.assertFalse((self.dir / '_velcro').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

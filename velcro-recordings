@@ -8,7 +8,7 @@
 
 Each line of <dir>/.velcro-import.jsonl is one recording. For each one, in order:
 
-  1. transcribe: check the file against the SHA-256 the import wrote, then run the engine.
+  1. transcribe: check the file against the SHA-256 the import wrote, then run the engine (no default).
      --engine claude runs `velcro transcribe` (your Claude Code login); anything else is a command
      line run with the file: {file} and {json} in it are replaced by the recording and a JSON file
      the command may write, otherwise the file goes last. The command prints the text.
@@ -309,7 +309,7 @@ def main(argv=None):
     p.add_argument('--dir', required=True, help='the folder velcro import writes to (with .velcro-import.jsonl)')
     p.add_argument('--out', required=True, help='where transcripts and hook output go')
     p.add_argument('--state', required=True, help='folder for the failure counts and the lock')
-    p.add_argument('--engine', default='claude', help='claude, or a command line ({file}, {json})')
+    p.add_argument('--engine', required=True, help='a command line ({file}, {json}), or claude')
     p.add_argument('--velcro', default='velcro', help='the velcro command, for --engine claude')
     p.add_argument('--lang', default='', help='language for --engine claude, e.g. ko')
     p.add_argument('--tidy', default='', help='command run after transcribing')
