@@ -12,7 +12,7 @@ final class Transcriber: ObservableObject {
     func pick() {
         let panel = NSOpenPanel()
         panel.title = "Transcribe Audio File"
-        panel.message = "velcro copies the text, transcribed with your Claude Code or Codex login."
+        panel.message = "velcro copies the text, transcribed with your Claude Code login."
         panel.prompt = "Transcribe"
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.audio]
