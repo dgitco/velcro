@@ -125,7 +125,7 @@
 velcro set recordings.engine "whisper-cli -nt -f"   # or claude
 velcro set recordings.tidy ~/bin/tidy-recording
 velcro set recordings.deliver ~/bin/deliver-recording
-velcro set recordings.since 2026-10-21
+velcro set recordings.since $(date +%F)
 velcro recordings                                  # what is waiting
 velcro recordings run                              # run it now</pre>
       <button class="btn-icon" type="button" data-copy aria-label="Copy" title="Copy"><svg><use href="#i-copy"/></svg></button>
