@@ -261,6 +261,7 @@ class Command(Base):
         self.assertEqual(r.returncode, 1)
         self.assertIn('choose an engine first', r.stderr)
         self.assertFalse((self.dir / '_velcro').exists())
+        self.assertFalse((home / '.local/state/velcro').exists())
 
 
 if __name__ == '__main__':
