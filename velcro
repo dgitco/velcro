@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.7.1
+VERSION=0.8.0
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -41,6 +41,8 @@ MIC_HELPER=${SELF:h}/velcro-mic-host
 MIC_TAKE=$CONF_DIR/.mic-take
 # Transcribe (see "velcro help"): talks to Claude Code's speech-to-text with your own login.
 TRANSCRIBE_HELPER=${SELF:h}/velcro-transcribe
+# Recordings (see "velcro help"): transcribe, tidy and deliver what import brought in.
+RECORDINGS_HELPER=${SELF:h}/velcro-recordings
 
 log() { print -r -- "$(date '+%F %T') $*" >>"$LOG"; }
 
@@ -247,8 +249,11 @@ cmd_install() {
     # Replace, don't write through: $BIN may be a link into velcro.app.
     [[ $SELF == "${BIN:A}" ]] || { rm -f "$BIN"; cp "$SELF" "$BIN"; chmod +x "$BIN"; }
     # velcro transcribe finds its helper next to the command.
-    [[ -f $TRANSCRIBE_HELPER && ${TRANSCRIBE_HELPER:A} != ${BIN:h:A}/velcro-transcribe ]] &&
-      cp -f "$TRANSCRIBE_HELPER" "${BIN:h}/velcro-transcribe" && chmod +x "${BIN:h}/velcro-transcribe"
+    local helper
+    for helper in $TRANSCRIBE_HELPER $RECORDINGS_HELPER; do
+      [[ -f $helper && ${helper:A} != ${BIN:h:A}/${helper:t} ]] &&
+        cp -f "$helper" "${BIN:h}/${helper:t}" && chmod +x "${BIN:h}/${helper:t}"
+    done
     mkdir -p "${PLIST:h}"
     cat >"$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -360,9 +365,17 @@ cmd_env() {
 #   transcribe.lang     = en                        language spoken in files for "velcro transcribe"
 #   transcribe.login    = ~/.claude                 Claude Code folder whose login it uses; may repeat
 #   transcribe.fallback = whisper-cli -f            command run with the file when Claude fails; empty = none
+#   recordings.dir      = /mnt/nas/me/recordings    folder with .velcro-import.jsonl (default: import.dest)
+#   recordings.out      = /mnt/nas/me/transcripts   where transcripts go (default: <recordings.dir>/_velcro)
+#   recordings.engine   = claude                    or a command line printing the text; {file} {json}
+#   recordings.tidy     = ~/bin/tidy                command run after transcribing (VELCRO_* variables)
+#   recordings.deliver  = ~/bin/deliver             command run after tidying
+#   recordings.alert    = ~/bin/alert               command run with a line of text from the 3rd failure on
+#   recordings.since    = 2026-10-21                only recordings imported at or after this time
 
 KEYS=(import.dest import.ext import.folder import.delete import.auto recorder send.inbox send.keep map
-  mic.host mic.on mic.warm transcribe.lang transcribe.login transcribe.fallback)
+  mic.host mic.on mic.warm transcribe.lang transcribe.login transcribe.fallback
+  recordings.dir recordings.out recordings.engine recordings.tidy recordings.deliver recordings.alert recordings.since)
 typeset -A DEFAULTS=(
   import.ext 'wav mp3 m4a aac flac wma ogg'
   import.delete yes
@@ -371,6 +384,7 @@ typeset -A DEFAULTS=(
   mic.warm 0
   send.keep 14
   transcribe.lang en
+  recordings.engine claude
 )
 
 # Every value of <key>, one per line, or its default when the file has none.
@@ -409,7 +423,7 @@ cmd_set() {
   [[ $1 == --add ]] && { append=1; shift; }
   local key=$1 v line; shift 2>/dev/null
   (( ${KEYS[(Ie)$key]} )) || { print -u2 "unknown setting: $key (one of: $KEYS)"; return 2; }
-  [[ $key == transcribe.(fallback|lang) ]] && (( $# > 1 )) &&
+  [[ $key == (transcribe.(fallback|lang)|recordings.*) ]] && (( $# > 1 )) &&
     { print -u2 "$key takes one value; quote a command line: velcro set $key \"whisper-cli -nt -f\""; return 2; }
   for v in "$@"; do
     case $key in
@@ -422,6 +436,8 @@ cmd_set() {
       map) [[ $v == (/|\~/)?*' -> '/* ]] || { print -u2 "map looks like: /Volumes/home -> /mnt/nas/me  (the left side may start with ~/)"; return 2; } ;;
       transcribe.lang) [[ $v == [a-z][a-z](|-[A-Za-z][A-Za-z]) ]] || { print -u2 "transcribe.lang is a language code, like en or ko"; return 2; } ;;
       transcribe.login) [[ $v == (/|\~/)?* ]] || { print -u2 "transcribe.login is a Claude Code folder, like ~/.claude"; return 2; } ;;
+      recordings.(dir|out)) [[ $v == (/|\~/)?* ]] || { print -u2 "$key is a folder, like /mnt/nas/me/recordings"; return 2; } ;;
+      recordings.since) [[ $v == <1900-2999>-<01-12>-<01-31>* ]] || { print -u2 "recordings.since is a date or time, like 2026-10-21 or 2026-10-21T09:00"; return 2; } ;;
       recorder) [[ $v == (uuid|name):?* ]] || { print -u2 "recorder is uuid:<VolumeUUID> or name:<volume name>"; return 2; } ;;
     esac
   done
@@ -1073,6 +1089,25 @@ cmd_transcribe() {
   fi
 }
 
+# Recordings: what import brought in, transcribed (engine), tidied and delivered (hook commands), one
+# file at a time, with failures retried later. velcro-recordings does the work; this hands it the settings.
+# On Linux there is no Library folder for its state, so it goes where XDG says.
+cmd_recordings() {
+  local sub=${1:-status}; shift 2>/dev/null
+  [[ $sub == (run|status) && $# == 0 ]] || { print -u2 "usage: velcro recordings [status | run]"; return 2; }
+  [[ -r $RECORDINGS_HELPER ]] || { print -u2 "velcro-recordings is missing next to $SELF; install velcro again"; return 1; }
+  local dir=$(folder_setting recordings.dir)
+  [[ -n $dir ]] || dir=$(folder_setting import.dest)
+  [[ -n $dir ]] || { print -u2 "set recordings.dir (or import.dest) first: velcro set recordings.dir <folder>"; return 1; }
+  local out=$(folder_setting recordings.out) state py
+  [[ -n $out ]] || out=$dir/_velcro
+  [[ $OSTYPE == darwin* ]] && state=$SUPPORT || state=${XDG_STATE_HOME:-$HOME/.local/state}/velcro
+  py=$(transcribe_python) || return 1
+  "$py" "$RECORDINGS_HELPER" $sub --dir "$dir" --out "$out" --state "$state" --velcro "$SELF" \
+    --engine "$(setting recordings.engine)" --lang "$(setting transcribe.lang)" --since "$(setting recordings.since)" \
+    --tidy "$(setting recordings.tidy)" --deliver "$(setting recordings.deliver)" --alert "$(setting recordings.alert)"
+}
+
 cmd_help() {
   cat <<EOF
 velcro $VERSION — keep network shares stuck to your Mac
@@ -1097,6 +1132,8 @@ velcro $VERSION — keep network shares stuck to your Mac
   velcro transcribe <file>   audio file to text, through the speech-to-text Claude Code's /voice
                              uses, with your own Claude Code login (--lang ko, --json, --no-fallback).
                              Not a public API: only your own login and audio, never shared
+  velcro recordings [run]    what is waiting in recordings.dir; run transcribes, tidies and
+                             delivers it (engine and hook commands below), retrying failures
   velcro settings            show settings;  velcro set [--add] <key> [value ...] to change one
 
 settings ($SETTINGS):
@@ -1118,6 +1155,15 @@ settings ($SETTINGS):
                        (\$CLAUDE_CONFIG_DIR or ~/.claude). It is read, never renewed
   transcribe.fallback  command to run with the file when Claude can't transcribe it, printing
                        the text, e.g. "whisper-cli -nt -f" (none: the failure is reported)
+  recordings.dir       folder velcro import fills, with .velcro-import.jsonl (import.dest)
+  recordings.out       where transcripts and hook output go (<recordings.dir>/_velcro)
+  recordings.engine    claude (velcro transcribe, your login), or a command line that prints the
+                       text: {file} is the recording (else it goes last), {json} a file it may write
+  recordings.tidy      command run after transcribing, with VELCRO_RECORDING, VELCRO_TRANSCRIPT,
+                       VELCRO_TRANSCRIPT_JSON, VELCRO_RECORD and VELCRO_OUT; its output is kept
+  recordings.deliver   command run after tidying, the same plus VELCRO_TIDIED
+  recordings.alert     command run with one line of text when a step fails a 3rd time (once a day)
+  recordings.since     only recordings imported at or after this time, e.g. 2026-10-21
 
 config: $CONF
 EOF
@@ -1140,6 +1186,7 @@ case ${1:-help} in
   send)        shift; cmd_send "$@" ;;
   mic)         shift; cmd_mic "$@" ;;
   transcribe)  shift; cmd_transcribe "$@" ;;
+  recordings)  shift; cmd_recordings "$@" ;;
   settings)    cmd_settings ;;
   set)         shift; cmd_set "$@" ;;
   version|-v|--version) print "velcro $VERSION" ;;

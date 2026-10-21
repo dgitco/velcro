@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""velcro-recordings: turn every recording `velcro import` put in a folder into text, then hand it on.
+
+`velcro recordings run` runs it with your settings; it also runs on its own:
+
+  velcro-recordings run    --dir <folder> --out <folder> --state <folder> [options]
+  velcro-recordings status --dir <folder> --out <folder> --state <folder> [options]
+
+Each line of <dir>/.velcro-import.jsonl is one recording. For each one, in order:
+
+  1. transcribe: check the file against the SHA-256 the import wrote, then run the engine.
+     --engine claude runs `velcro transcribe` (your Claude Code login); anything else is a command
+     line run with the file: {file} and {json} in it are replaced by the recording and a JSON file
+     the command may write, otherwise the file goes last. The command prints the text.
+     Writes <out>/<name>.txt, then <out>/<name>.json (written last: it marks the step done).
+  2. tidy (optional): --tidy <command>, run with the VELCRO_* variables below. What it prints is
+     kept in <out>/<name>.tidy.txt.
+  3. deliver (optional): --deliver <command>, the same, also with VELCRO_TIDIED. What it prints is
+     kept in <out>/<name>.deliver.txt.
+
+The hooks get VELCRO_RECORDING (the audio), VELCRO_RECORD (its import line, JSON), VELCRO_TRANSCRIPT,
+VELCRO_TRANSCRIPT_JSON, VELCRO_OUT and, for deliver, VELCRO_TIDIED. A step that fails (exit status
+not 0, or a timeout) is tried again after 10, 20, 40 ... minutes (at most 6 hours); from the third
+failure on, --alert <command> runs with one line of text last, at most once a day per file and step.
+Nothing is ever deleted or changed in <dir>. One run at a time per <out> (a lock in <state>).
+Exit status: 0 done (failures are counted in the state and retried later), 2 usage.
+"""
+import argparse
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import time
+import unicodedata
+
+MANIFEST = '.velcro-import.jsonl'
+BACKOFF_S, BACKOFF_MAX_S = 600, 6 * 3600
+ALERT_FROM = 3
+HOOK_TIMEOUT_S = 1800
+STEPS = ('transcribe', 'tidy', 'deliver')
+
+
+def say(*a):
+    print(time.strftime('%H:%M:%S'), *a, flush=True)
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''):
+            h.update(b)
+    return h.hexdigest()
+
+
+def command(line, **fill):
+    """A setting's command line as argv: a leading ~ is the home folder, {name} placeholders are filled.
+    Returns (argv, whether a {file} placeholder was there)."""
+    argv = [os.path.expanduser(w) for w in shlex.split(line)]
+    used = any('{file}' in w for w in argv)
+    return [w.format_map(_Keep(fill)) for w in argv], used
+
+
+class _Keep(dict):
+    def __missing__(self, key):  # an unknown {word} stays as typed
+        return '{' + key + '}'
+
+
+def put(path, data):
+    """Write through a temporary name, so a half-written file never has the real name."""
+    tmp = path.with_name(f'.{path.name}.part')
+    tmp.write_text(data)
+    os.replace(tmp, path)
+
+
+class Run:
+    def __init__(self, a):
+        self.a = a
+        self.dir, self.out, self.state_dir = Path(a.dir), Path(a.out), Path(a.state)
+        tag = hashlib.sha1(str(self.out.resolve()).encode()).hexdigest()[:10]
+        self.state_file = self.state_dir / f'recordings-{tag}.json'
+        self.lock_file = self.state_dir / f'recordings-{tag}.lock'
+        try:
+            self.state = json.loads(self.state_file.read_text())
+        except (FileNotFoundError, ValueError):
+            self.state = {}
+
+    def save(self):
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.state['out'] = str(self.out)
+        put(self.state_file, json.dumps(self.state, ensure_ascii=False, indent=1))
+
+    # ---- what to do ----
+
+    def records(self):
+        index = self.dir / MANIFEST
+        if not index.exists():
+            return []
+        recs = []
+        for line in index.read_text().splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get('file') and str(r.get('imported_at', '')) >= (self.a.since or ''):
+                recs.append(r)
+        # A Mac writes decomposed Hangul; the share may keep the composed name. Take the actual spelling
+        # only when exactly one file matches.
+        names = [p.name for p in self.dir.iterdir() if p.is_file()]
+        nfc = {}
+        for n in names:
+            nfc.setdefault(unicodedata.normalize('NFC', n), []).append(n)
+        for r in recs:
+            m = nfc.get(unicodedata.normalize('NFC', r['file']), [])
+            if r['file'] not in names and len(m) == 1:
+                r['file'] = m[0]
+        latest = {}  # the same file imported again: the last line wins
+        for r in recs:
+            latest[r['file']] = r
+        return list(latest.values())
+
+    def paths(self, rec):
+        stem = Path(rec['file']).stem
+        return {'audio': self.dir / rec['file'], 'txt': self.out / f'{stem}.txt', 'json': self.out / f'{stem}.json',
+                'engine_json': self.out / f'.{stem}.engine.json',
+                'tidy': self.out / f'{stem}.tidy.txt', 'deliver': self.out / f'{stem}.deliver.txt'}
+
+    def next_step(self, rec):
+        p = self.paths(rec)
+        if not p['audio'].exists():
+            return None, 'source gone'
+        if not p['json'].exists():
+            step = 'transcribe'
+        elif self.a.tidy and not p['tidy'].exists():
+            step = 'tidy'
+        elif self.a.deliver and not p['deliver'].exists():
+            step = 'deliver'
+        else:
+            return None, 'done'
+        f = self.state.get('failures', {}).get(rec['file'])
+        if f and f.get('step') == step and f.get('next', 0) > time.time():
+            return None, f'{step} (try {f["count"] + 1} after {time.strftime("%m-%d %H:%M", time.localtime(f["next"]))})'
+        return step, step
+
+    # ---- steps ----
+
+    def transcribe(self, rec):
+        p = self.paths(rec)
+        if rec.get('sha256'):
+            got = sha256(p['audio'])
+            if got != rec['sha256']:
+                raise RuntimeError(f"{rec['file']}: SHA-256 doesn't match the import record")
+        limit = 1800 + float(rec.get('duration_s') or 3 * 3600) * 0.5
+        p['engine_json'].unlink(missing_ok=True)
+        t0 = time.time()
+        if self.a.engine == 'claude':
+            argv = [self.a.velcro, 'transcribe', '--json'] + (['--lang', self.a.lang] if self.a.lang else []) + [str(p['audio'])]
+        else:
+            argv, has_file = command(self.a.engine, file=str(p['audio']), json=str(p['engine_json']))
+            if not has_file:
+                argv.append(str(p['audio']))
+        try:
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=limit)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f'the engine took over {round(limit / 60)} min, stopped')
+        if r.returncode:
+            raise RuntimeError(f'the engine failed (exit {r.returncode}): {r.stderr.strip()[-300:]}')
+        text, detail = r.stdout, None
+        if self.a.engine == 'claude':
+            detail = json.loads(text)
+            text = detail.pop('text', '')
+        elif p['engine_json'].exists():
+            try:
+                detail = json.loads(p['engine_json'].read_text())
+            except ValueError:
+                detail = None
+        if not text.strip():
+            raise RuntimeError('the engine printed no text')
+        p['engine_json'].unlink(missing_ok=True)
+        doc = {'file': rec['file'], 'sha256': rec.get('sha256'), 'duration_s': rec.get('duration_s'),
+               'engine': 'claude' if self.a.engine == 'claude' else 'command', 'command': argv[0],
+               'wall_s': round(time.time() - t0), 'at': now_iso(), 'detail': detail}
+        put(p['txt'], text if text.endswith('\n') else text + '\n')
+        put(p['json'], json.dumps(doc, ensure_ascii=False, indent=1))  # last: marks the step done
+        return f"{len(text)} characters in {doc['wall_s']} s"
+
+    def hook(self, rec, step):
+        p = self.paths(rec)
+        env = dict(os.environ, VELCRO_RECORDING=str(p['audio']), VELCRO_RECORD=json.dumps(rec, ensure_ascii=False),
+                   VELCRO_TRANSCRIPT=str(p['txt']), VELCRO_TRANSCRIPT_JSON=str(p['json']), VELCRO_OUT=str(self.out))
+        if step == 'deliver':
+            env['VELCRO_TIDIED'] = str(p['tidy']) if p['tidy'].exists() else ''
+        argv, _ = command(getattr(self.a, step))
+        try:
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env,
+                               timeout=HOOK_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f'{step} took over {HOOK_TIMEOUT_S // 60} min, stopped')
+        if r.returncode:
+            raise RuntimeError(f'{step} failed (exit {r.returncode}): {(r.stderr or r.stdout).strip()[-300:]}')
+        put(p[step], r.stdout)
+        return f'{step} ok'
+
+    # ---- failures ----
+
+    def failed(self, rec, step, err):
+        f = self.state.setdefault('failures', {}).get(rec['file'])
+        if not f or f.get('step') != step:
+            f = {'count': 0}
+        f['count'] += 1
+        f.update(step=step, error=str(err)[-300:], at=int(time.time()),
+                 next=int(time.time() + min(BACKOFF_S * 2 ** (f['count'] - 1), BACKOFF_MAX_S)))
+        self.state['failures'][rec['file']] = f
+        self.save()
+        say(f"{rec['file']}: {step} failed (try {f['count']}):", err)
+        if f['count'] >= ALERT_FROM and self.a.alert:
+            key, today = f"{rec['file']}:{step}", time.strftime('%Y-%m-%d')
+            sent = self.state.setdefault('alerted', {})
+            if sent.get(key) != today:
+                text = (f"velcro recordings: {rec['file']} {step} failed {f['count']} times, next try "
+                        f"{time.strftime('%m-%d %H:%M', time.localtime(f['next']))}: {str(err)[-200:]}")
+                argv, _ = command(self.a.alert)
+                try:
+                    r = subprocess.run(argv + [text], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+                    if r.returncode == 0:
+                        sent[key] = today
+                        self.save()
+                    else:
+                        say('alert failed:', (r.stderr or r.stdout).strip()[-200:])
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    say('alert failed:', e)
+
+    # ---- commands ----
+
+    def status(self):
+        recs = self.records()
+        if not recs:
+            say('no recordings in', self.dir / MANIFEST)
+        for rec in recs:
+            _, what = self.next_step(rec)
+            print(f"{rec['file']:28} {what}")
+        return 0
+
+    def run(self):
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.lock_file, 'w') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                say('another run is still going')
+                return 0
+            return self.steps()
+
+    def steps(self):
+        self.out.mkdir(parents=True, exist_ok=True)
+        started, worked = time.time(), False
+        for rec in self.records():
+            while True:
+                step, _ = self.next_step(rec)
+                if not step:
+                    break
+                if time.time() - started > self.a.budget:
+                    say('run budget used, the rest waits for the next run')
+                    return 0
+                worked = True
+                try:
+                    msg = self.transcribe(rec) if step == 'transcribe' else self.hook(rec, step)
+                except Exception as e:  # any failure is counted and retried; the next file still runs
+                    self.failed(rec, step, e)
+                    break
+                self.state.get('failures', {}).pop(rec['file'], None)
+                self.state.setdefault('done', {}).setdefault(rec['file'], {})[step] = now_iso()
+                self.save()
+                say(f"{rec['file']}: {msg}")
+        if not worked:
+            say('nothing new')
+        return 0
+
+
+def now_iso():
+    return datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog='velcro-recordings', description='Transcribe, tidy and deliver imported recordings.')
+    p.add_argument('command', choices=('run', 'status'))
+    p.add_argument('--dir', required=True, help='the folder velcro import writes to (with .velcro-import.jsonl)')
+    p.add_argument('--out', required=True, help='where transcripts and hook output go')
+    p.add_argument('--state', required=True, help='folder for the failure counts and the lock')
+    p.add_argument('--engine', default='claude', help='claude, or a command line ({file}, {json})')
+    p.add_argument('--velcro', default='velcro', help='the velcro command, for --engine claude')
+    p.add_argument('--lang', default='', help='language for --engine claude, e.g. ko')
+    p.add_argument('--tidy', default='', help='command run after transcribing')
+    p.add_argument('--deliver', default='', help='command run after tidying')
+    p.add_argument('--alert', default='', help='command run with a line of text from the third failure on')
+    p.add_argument('--since', default='', help='only recordings imported at or after this time (2026-10-21T00:00)')
+    p.add_argument('--budget', type=float, default=40 * 60, help='seconds after which no new step starts (2400)')
+    a = p.parse_args(argv)
+    if not Path(a.dir).is_dir():
+        print(f'velcro-recordings: no such folder: {a.dir}', file=sys.stderr)
+        return 2
+    r = Run(a)
+    return r.run() if a.command == 'run' else r.status()
+
+
+if __name__ == '__main__':
+    sys.exit(main())

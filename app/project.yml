@@ -8,7 +8,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    MARKETING_VERSION: 0.7.1
+    MARKETING_VERSION: 0.8.0
     CURRENT_PROJECT_VERSION: 1
     SWIFT_VERSION: "6.0"
     SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
@@ -32,6 +32,9 @@ targets:
         buildPhase: resources
       # Talks to Claude Code's speech-to-text for "velcro transcribe".
       - path: ../velcro-transcribe
+        buildPhase: resources
+      # Transcribes, tidies and delivers imported recordings for "velcro recordings".
+      - path: ../velcro-recordings
         buildPhase: resources
     dependencies:
       # Reads files with the cache off to verify copies on network shares; lands in Contents/MacOS.
