@@ -188,11 +188,13 @@ velcro recordings run                                  # do it now (a timer runs
 | `mic.on` | `no` | lend the microphone (`velcro mic on`/`off`) |
 | `mic.warm` | `0` | seconds the microphone stays open after a recording |
 | `transcribe.lang` | `en` | language spoken in files for `velcro transcribe`, like `ko` |
+| `transcribe.engine` | `claude codex` | engines to try, in order, each only if signed in: `claude`, `codex` |
 | `transcribe.login` | `~/.claude` | Claude Code folder whose login to use; several are tried in order |
-| `transcribe.fallback` | | command run with the file when Claude can't transcribe it; none reports the failure |
+| `transcribe.codex` | `~/.codex` | Codex folder whose ChatGPT login to use |
+| `transcribe.fallback` | | command run with the file when no engine can transcribe it; none reports the failure |
 | `recordings.dir` | `import.dest` | folder with `.velcro-import.jsonl` that `velcro recordings` works through |
 | `recordings.out` | `<recordings.dir>/_velcro` | where transcripts and hook output go |
-| `recordings.engine` | | a command line that prints the text (`{file}`, `{json}`), or `claude`; required |
+| `recordings.engine` | | a command line that prints the text (`{file}`, `{json}`), or `claude` or `codex`; required |
 | `recordings.tidy` | | command run after transcribing |
 | `recordings.deliver` | | command run after tidying |
 | `recordings.alert` | | command run with one line of text from a step's third failure on |
