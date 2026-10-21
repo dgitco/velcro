@@ -21,6 +21,7 @@ Exit status: 0 text on stdout, 1 failed (reason on stderr), 2 usage.
 import argparse
 import base64
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -460,7 +461,10 @@ def pieces(pcm, seconds=PIECE_S, quiet=QUIET_S):
         cut = cut if cut > pos else pos + size
         out.append(pcm[2 * pos:2 * cut])
         pos = cut
-    out.append(pcm[2 * pos:])
+    if out and total - pos < RATE:  # a sliver under a second rides with the piece before it
+        out[-1] += pcm[2 * pos:]
+    else:
+        out.append(pcm[2 * pos:])
     return out
 
 
@@ -486,8 +490,8 @@ def chatgpt_transcribe(token, account, filename, content_type, data, opener=urll
         detail = e.read()[:300].decode(errors='replace').strip()
         raise Failed(f'ChatGPT transcribe answered {e.code}' + (f': {detail}' if detail else '')
                      + (' (sign in to Codex again)' if e.code in (401, 403) else ''))
-    except (OSError, ValueError) as e:
-        raise Failed(f"couldn't reach ChatGPT transcribe: {e}")
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        raise Failed(f"couldn't reach ChatGPT transcribe: {type(e).__name__} {e}".strip())
     if not isinstance(reply, dict) or not isinstance(reply.get('text'), str):
         raise Failed('ChatGPT transcribe gave no text')
     return reply['text'].strip()

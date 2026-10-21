@@ -1066,7 +1066,7 @@ cmd_transcribe() {
   local file=${1:a}
   [[ -f $file ]] || { print -u2 "no such file: $1"; return 1; }
   [[ -r $TRANSCRIBE_HELPER ]] || { print -u2 "velcro-transcribe is missing next to $SELF; install velcro again"; return 1; }
-  local -a args=(--lang "$lang" --engine "${(j:,:)engines}") cmd
+  local -a args=(--lang "$lang" --engine "${(j:,:)${(@u)engines}}") cmd  # (u): set --add can repeat one
   local login py text= engine= rc codex=$(folder_setting transcribe.codex)
   for login in "${(@f)$(setting_all transcribe.login)}"; do
     [[ -n $login ]] && args+=(--login "${login/#\~/$HOME}")

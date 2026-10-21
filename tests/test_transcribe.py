@@ -217,6 +217,10 @@ class ChatGPT(unittest.TestCase):
         self.assertEqual(len(parts), 3)
         self.assertTrue(quiet_at <= len(parts[0]) / 2 / vt.RATE < quiet_at + 1)
 
+    def test_a_sliver_at_the_end_is_not_a_piece_of_its_own(self):
+        pcm = bytes(2 * (vt.PIECE_S * vt.RATE + 100))
+        self.assertEqual([len(p) for p in vt.pieces(pcm, quiet=0)], [len(pcm)])
+
     def test_pieces_are_16k_wavs(self):
         with wave.open(io.BytesIO(vt.wav_bytes(b'\x01\x00' * 160))) as w:
             self.assertEqual((w.getnchannels(), w.getframerate(), w.getsampwidth(), w.getnframes()), (1, 16000, 2, 160))
@@ -358,6 +362,8 @@ class Fallback(unittest.TestCase):
         self.velcro('set', 'transcribe.engine', 'claude')
         self.assertEqual(engine(), 'claude')
         self.assertEqual(engine('--engine', 'codex'), 'codex')
+        self.velcro('set', '--add', 'transcribe.engine', 'claude')
+        self.assertEqual(engine(), 'claude')
         for bad in (['whisper'], ['claude', 'claude'], ['claude codex']):
             self.assertEqual(self.velcro('set', 'transcribe.engine', *bad).returncode, 2, bad)
         self.assertEqual(self.velcro('transcribe', '--engine', 'both', str(self.audio)).returncode, 2)
