@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.8.0
+VERSION=0.8.1
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -367,7 +367,7 @@ cmd_env() {
 #   transcribe.fallback = whisper-cli -f            command run with the file when Claude fails; empty = none
 #   recordings.dir      = /mnt/nas/me/recordings    folder with .velcro-import.jsonl (default: import.dest)
 #   recordings.out      = /mnt/nas/me/transcripts   where transcripts go (default: <recordings.dir>/_velcro)
-#   recordings.engine   = claude                    or a command line printing the text; {file} {json}
+#   recordings.engine   = whisper-cli -nt -f        a command line printing the text ({file} {json}), or claude
 #   recordings.tidy     = ~/bin/tidy                command run after transcribing (VELCRO_* variables)
 #   recordings.deliver  = ~/bin/deliver             command run after tidying
 #   recordings.alert    = ~/bin/alert               command run with a line of text from the 3rd failure on
@@ -386,7 +386,6 @@ typeset -A DEFAULTS=(
   mic.warm 0
   send.keep 14
   transcribe.lang en
-  recordings.engine claude
 )
 
 # Every value of <key>, one per line, or its default when the file has none.
@@ -1105,6 +1104,8 @@ cmd_recordings() {
   local out=$(folder_setting recordings.out) state py
   [[ -n $out ]] || out=$dir/_velcro
   [[ $OSTYPE == darwin* ]] && state=$SUPPORT || state=${XDG_STATE_HOME:-$HOME/.local/state}/velcro
+  # No default engine: long recordings through someone's Claude login should be a choice, not a default.
+  [[ -n $(setting recordings.engine) ]] || { print -u2 "choose an engine first: velcro set recordings.engine \"<command that prints the text>\" (or claude, which uses your Claude Code login)"; return 1; }
   py=$(transcribe_python) || return 1
   "$py" "$RECORDINGS_HELPER" $sub --dir "$dir" --out "$out" --state "$state" --velcro "$SELF" \
     --engine "$(setting recordings.engine)" --lang "$(setting transcribe.lang)" --since "$(setting recordings.since)" --timeout "$(setting recordings.timeout)" \
@@ -1160,8 +1161,9 @@ settings ($SETTINGS):
                        the text, e.g. "whisper-cli -nt -f" (none: the failure is reported)
   recordings.dir       folder velcro import fills, with .velcro-import.jsonl (import.dest)
   recordings.out       where transcripts and hook output go (<recordings.dir>/_velcro)
-  recordings.engine    claude (velcro transcribe, your login), or a command line that prints the
-                       text: {file} is the recording (else it goes last), {json} a file it may write
+  recordings.engine    a command line that prints the text: {file} is the recording (else it goes
+                       last), {json} a file it may write; or claude (velcro transcribe, your login).
+                       No default: velcro recordings waits until one is chosen
   recordings.tidy      command run after transcribing, with VELCRO_RECORDING, VELCRO_TRANSCRIPT,
                        VELCRO_TRANSCRIPT_JSON, VELCRO_RECORD and VELCRO_OUT; its output is kept
   recordings.deliver   command run after tidying, the same plus VELCRO_TIDIED

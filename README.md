@@ -153,14 +153,14 @@ velcro transcribe --json memo.m4a          # {"engine":"claude","file":"…","te
 
 ```sh
 velcro set recordings.dir /mnt/nas/me/recordings       # the folder velcro import fills (default: import.dest)
-velcro set recordings.engine "whisper-cli -nt -f"      # or claude (the default): velcro transcribe, your login
+velcro set recordings.engine "whisper-cli -nt -f"      # required; or claude: velcro transcribe, your login
 velcro set recordings.tidy ~/bin/tidy-recording        # optional
 velcro set recordings.deliver ~/bin/deliver-recording  # optional
 velcro recordings                                      # what is waiting, and why
 velcro recordings run                                  # do it now (a timer runs this)
 ```
 
-- **Engine.** `claude` sends the audio through `velcro transcribe` (see above; for long meetings a local engine is kinder to your account). Any other value is a command line that prints the text: `{file}` in it is the recording (otherwise the file goes last) and `{json}` a file it may write with details, which velcro keeps.
+- **Engine (no default, pick one).** A local engine is the usual choice for meetings. `claude` sends the audio through `velcro transcribe` (see above), which is meant for memos and short recordings; long meetings every day through your login is a bigger ask of a stream that isn't a public API. Any other value is a command line that prints the text: `{file}` in it is the recording (otherwise the file goes last) and `{json}` a file it may write with details, which velcro keeps.
 - **Where things go.** `<recordings.out>/<name>.txt` and `<name>.json` (default `recordings.out`: `_velcro` inside the folder). The JSON is written last and marks the recording transcribed. Nothing in the recordings folder is changed or deleted.
 - **Hooks.** The tidy and deliver commands run with `VELCRO_RECORDING` (the audio), `VELCRO_RECORD` (its line from the import, JSON), `VELCRO_TRANSCRIPT`, `VELCRO_TRANSCRIPT_JSON` and `VELCRO_OUT`; deliver also gets `VELCRO_TIDIED`, what tidy printed. What each prints is kept as `<name>.tidy.txt` and `<name>.deliver.txt`; exit status 0 means done.
 - **Failures.** A step that fails is tried again after 10, 20, 40 minutes and so on, at most 6 hours apart, without redoing the steps before it. From the third failure, `recordings.alert` (a command) runs with one line of text, at most once a day per file and step. Other recordings carry on meanwhile.
@@ -189,7 +189,7 @@ velcro recordings run                                  # do it now (a timer runs
 | `transcribe.fallback` | | command run with the file when Claude can't transcribe it; none reports the failure |
 | `recordings.dir` | `import.dest` | folder with `.velcro-import.jsonl` that `velcro recordings` works through |
 | `recordings.out` | `<recordings.dir>/_velcro` | where transcripts and hook output go |
-| `recordings.engine` | `claude` | `claude`, or a command line that prints the text (`{file}`, `{json}`) |
+| `recordings.engine` | | a command line that prints the text (`{file}`, `{json}`), or `claude`; required |
 | `recordings.tidy` | | command run after transcribing |
 | `recordings.deliver` | | command run after tidying |
 | `recordings.alert` | | command run with one line of text from a step's third failure on |
