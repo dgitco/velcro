@@ -266,8 +266,7 @@ final class Clipboard: ObservableObject {
             }
         } else if let png = Self.png(from: pasteboard) {
             saveImage(png)
-            // Excel, Word and others put a picture of copied text next to the text: that is text.
-            if Self.textTypes.isDisjoint(with: pasteboard.types ?? []) { ClipSender.shared.copied(png) }
+            if !Self.isText(pasteboard) { ClipSender.shared.copied(png) }
         }
     }
 
@@ -314,7 +313,14 @@ final class Clipboard: ObservableObject {
         return bitmap.representation(using: .png, properties: [:])
     }
 
-    private static let textTypes: Set<NSPasteboard.PasteboardType> = [.string, .rtf, .rtfd]
+    /// Excel cells or a Word paragraph come with a picture of themselves: that copy is text. A
+    /// browser's Copy Image puts the image's address there as text too, and is still an image.
+    private static func isText(_ pasteboard: NSPasteboard) -> Bool {
+        guard let text = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return false }
+        let oneURL = text.rangeOfCharacter(from: .whitespacesAndNewlines) == nil && URL(string: text)?.scheme != nil
+        return !oneURL
+    }
 
     /// An image file copied in Finder, as PNG; nil for any other file (or one over 50 MB).
     private static func png(fromFile url: URL) -> Data? {
