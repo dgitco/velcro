@@ -210,6 +210,7 @@ final class Importer: ObservableObject {
 
 /// Recent images and files copied on this Mac, offered in the menu to send to the inbox folder.
 /// Watching is read-only: the clipboard only changes when an item is clicked, to the sent path.
+/// Copied images (never text) also go to ClipSender, for ⌃V on a Linux machine when that's on.
 final class Clipboard: ObservableObject {
     static let shared = Clipboard()
 
@@ -260,8 +261,10 @@ final class Clipboard: ObservableObject {
                 let icon = NSWorkspace.shared.icon(forFile: url.path)
                 add(Clip(url: url, title: url.lastPathComponent, thumbnail: Self.thumbnail(icon)))
             }
+            if let png = urls.lazy.compactMap(Self.png(fromFile:)).first { ClipSender.shared.copied(png) }
         } else if let png = Self.png(from: pasteboard) {
             saveImage(png)
+            ClipSender.shared.copied(png)
         }
     }
 
@@ -305,6 +308,14 @@ final class Clipboard: ObservableObject {
         if let png = pasteboard.data(forType: .png) { return png }
         guard let tiff = pasteboard.data(forType: .tiff), let bitmap = NSBitmapImageRep(data: tiff)
         else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
+    /// An image file copied in Finder, as PNG; nil for any other file.
+    private static func png(fromFile url: URL) -> Data? {
+        guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image) else { return nil }
+        if type.conforms(to: .png) { return try? Data(contentsOf: url) }
+        guard let data = try? Data(contentsOf: url), let bitmap = NSBitmapImageRep(data: data) else { return nil }
         return bitmap.representation(using: .png, properties: [:])
     }
 

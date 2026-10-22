@@ -19,6 +19,7 @@ It also does things that don't need a NAS at all:
 - **[Voice recorder import](#import-from-a-voice-recorder):** plug in a USB recorder and its recordings are copied to any folder you choose, checked by SHA-256, then cleared from the recorder
 - **[Send to an inbox](#send-to-an-inbox):** save a recent screenshot or file to a folder (a share, Dropbox, Syncthing) and copy its path, even the path a server sees
 - **[Mac mic](#lend-your-macs-microphone-to-a-server):** lend your Mac's microphone to a Linux machine you use over SSH, so voice input there (Claude Code's `/voice`) hears you; it's open only while something there records
+- **[Mac clipboard](#paste-mac-screenshots-on-a-server):** copy an image on your Mac and ⌃V pastes it into Claude Code on a Linux machine you use over SSH; text and passwords stay on the Mac
 - **[Process recordings](#process-recordings):** on a server that sees the recordings folder, transcribe each imported recording and hand it to your own tidy and deliver commands, retrying failures
 - **[Transcribe](#transcribe-a-voice-memo):** turn an audio file, like a Slack voice memo, into text with the speech-to-text Claude Code's `/voice` uses, or ChatGPT's through Codex, signed in as you
 
@@ -129,6 +130,25 @@ velcro mic off
 - Only one Mac lends its microphone to a server at a time. Turning it on on a second Mac takes over; the first shows **Use This Mac's Microphone** to take it back.
 - `velcro mic remove` deletes the helper from the server and forgets the host.
 
+## Paste Mac screenshots on a server
+
+Claude Code pastes an image with ⌃V, but over SSH it asks the server's clipboard, which has never seen your screenshot. velcro can send it there as you copy it.
+
+```sh
+velcro clip on devbox     # any host `ssh devbox` reaches without a password prompt
+velcro clip               # Mac clipboard → devbox: on (sent an image at 14:02)
+velcro clip off
+```
+
+`velcro clip on <host>` copies a small helper, `velcro-clip-host`, to `~/.local/bin` there and links `xclip` and `wl-paste` next to it to the helper. While Mac Clipboard is on, each image you copy on the Mac (a screenshot with ⌘⌃⇧4, an image copied in an app, an image file copied in Finder) goes over SSH as PNG, replacing the one before. When Claude Code there asks `xclip` or `wl-paste` for an image, the helper answers with it for 10 minutes; anything else, like text, goes to the real `xclip` or `wl-paste` if the server has one.
+
+- Only images leave the Mac. Text, other files, and anything a password manager marks as private never do.
+- No account, server, or relay: the image goes straight from your Mac to that machine over your own SSH, and is kept in `~/.local/state/velcro/clip` there, readable only by you.
+- `~/.local/bin` has to come before `/usr/bin` on the server's `PATH` where Claude Code runs (most shells set it up that way); setup warns if a real `xclip` would answer first. It never replaces an `xclip` or `wl-paste` that isn't velcro's.
+- velcro.app does the sending. A command-only install can't.
+- With a Korean (or another non-English) input source on, ⌃V can reach the terminal as a letter: switch to English first.
+- `velcro clip remove` deletes the helper and its links from the server and forgets the host.
+
 ## Transcribe a voice memo
 
 The other way round from Mac mic: you already have the audio, a voice memo from Slack or a recording, and want the text. `velcro transcribe` sends the file to the same speech-to-text Claude Code's `/voice` uses, with your own Claude Code login, or to ChatGPT's with the ChatGPT login Codex keeps, and prints what it heard.
@@ -187,6 +207,8 @@ velcro recordings run                                  # do it now (a timer runs
 | `mic.host` | | SSH host that gets the microphone; `velcro mic setup <host>` sets it |
 | `mic.on` | `no` | lend the microphone (`velcro mic on`/`off`) |
 | `mic.warm` | `0` | seconds the microphone stays open after a recording |
+| `clip.host` | | SSH host that gets copied images; `velcro clip setup <host>` sets it |
+| `clip.on` | `no` | send each copied image there (`velcro clip on`/`off`) |
 | `transcribe.lang` | `en` | language spoken in files for `velcro transcribe`, like `ko` |
 | `transcribe.engine` | `claude codex` | engines to try, in order, each only if signed in: `claude`, `codex` |
 | `transcribe.login` | `~/.claude` | Claude Code folder whose login to use; several are tried in order |
@@ -229,7 +251,7 @@ velcro.app runs that pass itself when the network changes, when the Mac wakes, a
 
 **Does velcro see my passwords?** No. Share passwords stay in your keychain and macOS uses them to mount. velcro has no tokens or keys of its own. `velcro transcribe` reads your Claude Code login while it runs, to send the audio to Anthropic as Claude Code would, and nothing else.
 
-**What does it do with my clipboard?** It lists the last four images or files you copied. Copied images are kept in `~/Library/Application Support/velcro/clips` until they drop off the list or velcro quits; items password managers mark as private are skipped. It only writes to the clipboard when you pick something to send.
+**What does it do with my clipboard?** It lists the last four images or files you copied. Copied images are kept in `~/Library/Application Support/velcro/clips` until they drop off the list or velcro quits; items password managers mark as private are skipped. It only writes to the clipboard when you pick something to send. With Mac Clipboard on, copied images (only images) also go to the server you chose, over SSH.
 
 **How do I uninstall it?** `velcro uninstall`, then move velcro.app to the Trash. Settings live in `~/.config/velcro`.
 

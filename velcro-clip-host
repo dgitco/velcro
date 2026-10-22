@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+# velcro-clip-host: the Linux end of velcro's Mac clipboard. `velcro clip setup <host>` copies it to
+# ~/.local/bin on the server and links xclip and wl-paste there to it. While "Mac clipboard" is on,
+# velcro.app sends each image copied on the Mac over SSH (`velcro-clip-host put`, PNG on stdin),
+# and nothing else: text, files and what password managers copy stay on the Mac.
+#
+# Claude Code on Linux pastes an image with ⌃V by asking xclip (or wl-paste) for the clipboard's
+# image. Called as xclip or wl-paste, this answers those requests with the image last copied on the
+# Mac, for KEEP seconds; every other request goes to the real xclip or wl-paste, if there is one.
+#
+#   velcro-clip-host put        keep the PNG on stdin (prints "ok <version>")
+#   velcro-clip-host install    link xclip and wl-paste in this folder to this file
+#   velcro-clip-host remove     remove those links and the kept image
+#   velcro-clip-host status     what it holds
+#
+# Needs only python3.
+import os
+import shutil
+import sys
+import time
+
+VERSION = "1"  # velcro.app reinstalls this file when the one it ships says something else
+KEEP = 600  # seconds an image answers ⌃V; after that, the real tool answers again
+LIMIT = 50 * 1024 * 1024
+PNG = b"\x89PNG\r\n\x1a\n"
+TOOLS = ("xclip", "wl-paste")
+
+state_dir = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "velcro", "clip")
+image = os.path.join(state_dir, "image.png")
+me = os.path.realpath(__file__)
+
+
+def kept():
+    """The image ⌃V should paste, or None when there's none or it's older than KEEP."""
+    try:
+        if time.time() - os.stat(image).st_mtime < KEEP:
+            with open(image, "rb") as f:
+                return f.read()
+    except OSError:
+        pass
+    return None
+
+
+def put():
+    data = sys.stdin.buffer.read(LIMIT + 1)
+    if len(data) > LIMIT:
+        sys.exit("error the image is over 50 MB")
+    if not data.startswith(PNG):
+        sys.exit("error not a PNG image")
+    os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    tmp = f"{image}.{os.getpid()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.replace(tmp, image)
+    print(f"ok {VERSION}", flush=True)
+
+
+def real(tool):
+    """The xclip or wl-paste this one stands in for: the next one on PATH that isn't a link to here."""
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        f = os.path.join(d or ".", tool)
+        if os.path.isfile(f) and os.access(f, os.X_OK) and os.path.realpath(f) != me:
+            return f
+    return None
+
+
+def pass_through(tool, args):
+    f = real(tool)
+    if not f:
+        sys.exit(1)  # what a missing clipboard looks like to the caller
+    os.execv(f, [tool] + args)
+
+
+def flag(args, name, shortest):
+    """xclip takes any unambiguous start of an option (-sel, -o, -t); its value follows it."""
+    for i, a in enumerate(args):
+        if len(a) >= len(shortest) and name.startswith(a):
+            return args[i + 1] if i + 1 < len(args) else ""
+    return None
+
+
+def stand_in(tool, args):
+    if tool == "xclip":
+        reading = any(len(a) >= 2 and "-out".startswith(a) for a in args)
+        sel = flag(args, "-selection", "-se")
+        target = flag(args, "-target", "-t")
+        if not reading or not sel or not "clipboard".startswith(sel):
+            pass_through(tool, args)
+        listing = target == "TARGETS"
+    else:
+        listing = "-l" in args or "--list-types" in args
+        target = flag(args, "--type", "--type")
+        if target is None:
+            target = flag(args, "-t", "-t")
+    if not listing and not (target or "").startswith("image/"):
+        pass_through(tool, args)
+    data = kept()
+    if data is None:
+        pass_through(tool, args)
+    if listing:
+        sys.stdout.write("image/png\n")
+    elif target == "image/png":
+        sys.stdout.buffer.write(data)
+    else:
+        pass_through(tool, args)
+    sys.stdout.flush()
+
+
+def ours(f):
+    return os.path.islink(f) and os.path.realpath(f) == me
+
+
+def install():
+    here = os.path.dirname(me)
+    for tool in TOOLS:
+        f = os.path.join(here, tool)
+        if os.path.lexists(f) and not ours(f):
+            sys.exit(f"error {f} is another program; velcro won't replace it. Remove it, then run this again.")
+    for tool in TOOLS:
+        f = os.path.join(here, tool)
+        if not os.path.lexists(f):
+            os.symlink(me, f)
+    # Claude Code finds the first xclip on PATH; a real one in front of these would answer instead.
+    for tool in TOOLS:
+        first = shutil.which(tool)
+        if first and os.path.realpath(first) != me:
+            print(f"warning {first} comes before {here} on PATH here; put {here} first where Claude Code runs")
+    print(f"ok {VERSION}")
+
+
+def remove():
+    here = os.path.dirname(me)
+    for tool in TOOLS:
+        f = os.path.join(here, tool)
+        if ours(f):
+            os.remove(f)
+    try:
+        os.remove(image)
+    except FileNotFoundError:
+        pass
+    print("ok")
+
+
+def status():
+    try:
+        age = int(time.time() - os.stat(image).st_mtime)
+    except OSError:
+        return print("no image")
+    left = KEEP - age
+    print(f"image from {age} s ago" + (f", pastes for {left} s more" if left > 0 else ", too old to paste"))
+
+
+def main():
+    tool = os.path.basename(sys.argv[0])
+    if tool in TOOLS:
+        return stand_in(tool, sys.argv[1:])
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "put":
+        return put()
+    if cmd == "install":
+        return install()
+    if cmd == "remove":
+        return remove()
+    if cmd == "status":
+        return status()
+    if cmd == "--version":
+        return print(VERSION)
+    sys.exit("usage: velcro-clip-host put | install | remove | status")
+
+
+if __name__ == "__main__":
+    main()

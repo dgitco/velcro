@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Engine.shared.start()
         Clipboard.shared.start()
         Mic.shared.start()
+        ClipSender.shared.start()
         Task {
             await Store.shared.loadEnv()
             await Store.shared.loadSettings()
@@ -95,6 +96,7 @@ struct MenuContent: View {
         ImportMenu()
         SendMenu()
         MicMenu()
+        ClipMenu()
         TranscribeMenu()
 
         Divider()
@@ -195,6 +197,23 @@ struct MicMenu: View {
                 Button("Use This Mac's Microphone") { mic.takeOver() }
             }
             Button(mic.state == .off ? "Lend Microphone" : "Stop Lending Microphone") { mic.toggle() }
+        }
+    }
+}
+
+/// Mac clipboard section: only once `velcro clip setup <host>` has picked a machine.
+struct ClipMenu: View {
+    @ObservedObject private var clip = ClipSender.shared
+    @ObservedObject private var store = Store.shared
+
+    var body: some View {
+        if !clip.host.isEmpty {
+            Divider()
+            Text("Mac Clipboard → \(clip.host)")
+            if clip.state != .off {
+                Text(clip.summary.prefix(1).uppercased() + clip.summary.dropFirst())
+            }
+            Button(clip.state == .off ? "Send Copied Images" : "Stop Sending Images") { clip.toggle() }
         }
     }
 }
