@@ -50,6 +50,8 @@
 <h2>The problem</h2>
 <p>An SSH session carries text, not your Mac’s clipboard. If Claude Code, Codex, or another agent runs on a remote machine, the screenshot you just copied can’t be pasted into it. Most coding agents can read an image from a file path, though, so the trick is getting the file onto the server and the path into your clipboard.</p>
 
+<h2>Claude Code: just press ⌃V</h2>
+<p>If the agent is Claude Code on a Linux server, <a href="/">velcro</a> can make ⌃V work there as it does on your Mac. Run <code>velcro clip on devbox</code> once (any host <code>ssh devbox</code> reaches without a password): from then on each image you copy on the Mac goes straight to that machine over SSH, and Claude Code’s ⌃V pastes it. Only images are sent; text and passwords stay on your Mac. No account or relay is involved, and no shared folder is needed.</p>
 <h2>Use the NAS both machines already share</h2>
 <p>If your server mounts the same NAS as your Mac (say the Mac sees <code>/Volumes/home</code> and the server sees <code>/mnt/nas/me</code>), <a href="/">velcro</a> can do it in one click:</p>
 <ol>

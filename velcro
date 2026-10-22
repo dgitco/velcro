@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.9.0
+VERSION=0.10.0
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -39,6 +39,9 @@ MIC_STATUS=$SUPPORT/mic.status
 MIC_HELPER=${SELF:h}/velcro-mic-host
 # "velcro mic on" leaves this for velcro.app: use this Mac's microphone even if another Mac took over.
 MIC_TAKE=$CONF_DIR/.mic-take
+# Mac clipboard (see "velcro help"): velcro.app writes what it last sent here.
+CLIP_STATUS=$SUPPORT/clip.status
+CLIP_HELPER=${SELF:h}/velcro-clip-host
 # Transcribe (see "velcro help"): talks to Claude Code's speech-to-text with your own login.
 TRANSCRIBE_HELPER=${SELF:h}/velcro-transcribe
 # Recordings (see "velcro help"): transcribe, tidy and deliver what import brought in.
@@ -345,7 +348,8 @@ cmd_scan() { [[ -e $PAUSE ]] && print paused || print active; scan $1; }
 # For velcro.app: the files it shares with this script.
 cmd_env() {
   print -rl -- "VERSION=$VERSION" "CONF=$CONF" "PAUSE=$PAUSE" "LOG=$LOG" "BIN=$BIN" "SELF=$SELF" \
-    "SETTINGS=$SETTINGS" "QUEUE=$QUEUE" "IMPORT_STATUS=$IMPORT_STATUS" "MIC_STATUS=$MIC_STATUS"
+    "SETTINGS=$SETTINGS" "QUEUE=$QUEUE" "IMPORT_STATUS=$IMPORT_STATUS" "MIC_STATUS=$MIC_STATUS" \
+    "CLIP_STATUS=$CLIP_STATUS"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -362,6 +366,8 @@ cmd_env() {
 #   mic.host      = devbox                          SSH host that gets this Mac's microphone
 #   mic.on        = no                              send it while something there records
 #   mic.warm      = 0                               seconds the mic stays open after a recording
+#   clip.host     = devbox                          SSH host that gets images copied on this Mac
+#   clip.on       = no                              send each one as it's copied
 #   transcribe.lang     = en                        language spoken in files for "velcro transcribe"
 #   transcribe.engine   = claude codex              engines to try, in order, each if signed in
 #   transcribe.login    = ~/.claude                 Claude Code folder whose login it uses; may repeat
@@ -377,7 +383,7 @@ cmd_env() {
 #   recordings.timeout  = 10800                     seconds the engine may take (1800 + half the recording)
 
 KEYS=(import.dest import.ext import.folder import.delete import.auto recorder send.inbox send.keep map
-  mic.host mic.on mic.warm transcribe.lang transcribe.engine transcribe.login transcribe.codex transcribe.fallback
+  mic.host mic.on mic.warm clip.host clip.on transcribe.lang transcribe.engine transcribe.login transcribe.codex transcribe.fallback
   recordings.dir recordings.out recordings.engine recordings.tidy recordings.deliver recordings.alert recordings.since
   recordings.timeout)
 typeset -A DEFAULTS=(
@@ -386,6 +392,7 @@ typeset -A DEFAULTS=(
   import.auto yes
   mic.on no
   mic.warm 0
+  clip.on no
   send.keep 14
   transcribe.lang en
   transcribe.engine 'claude codex'
@@ -434,9 +441,9 @@ cmd_set() {
       import.delete|import.auto) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
       import.folder) [[ $v != /* && $v != (..|*/..|../*|*/../*) ]] || { print -u2 "import.folder is a folder on the recorder, like RECORD"; return 2; } ;;
       send.keep) [[ $v == <-> ]] || { print -u2 "send.keep is a number of days"; return 2; } ;;
-      mic.on) [[ $v == (yes|no) ]] || { print -u2 "mic.on is yes or no"; return 2; } ;;
+      mic.on|clip.on) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
       mic.warm) [[ $v == <-> ]] || { print -u2 "mic.warm is a number of seconds"; return 2; } ;;
-      mic.host) [[ -n $v && $v != -* && $v != *[[:space:]]* ]] || { print -u2 "mic.host is an SSH host, like devbox or me@devbox.local"; return 2; } ;;
+      mic.host|clip.host) [[ -n $v && $v != -* && $v != *[[:space:]]* ]] || { print -u2 "$key is an SSH host, like devbox or me@devbox.local"; return 2; } ;;
       map) [[ $v == (/|\~/)?*' -> '/* ]] || { print -u2 "map looks like: /Volumes/home -> /mnt/nas/me  (the left side may start with ~/)"; return 2; } ;;
       transcribe.lang) [[ $v == [a-z][a-z](|-[A-Za-z][A-Za-z]) ]] || { print -u2 "transcribe.lang is a language code, like en or ko"; return 2; } ;;
       transcribe.login) [[ $v == (/|\~/)?* ]] || { print -u2 "transcribe.login is a Claude Code folder, like ~/.claude"; return 2; } ;;
@@ -1030,6 +1037,65 @@ cmd_mic() {
   esac
 }
 
+# ---------------------------------------------------------------------------------------------
+# Mac clipboard: images copied on this Mac (a screenshot, an image copied in an app or Finder)
+# paste with ⌃V in Claude Code on a Linux machine you use over SSH. velcro.app sends each one to
+# velcro-clip-host there as it's copied; nothing else on the clipboard leaves the Mac.
+
+# velcro clip setup <host>: put velcro-clip-host on the machine and link xclip and wl-paste to it.
+clip_setup() {
+  local host=$1 out
+  [[ -n $host && $host != -* && $host != *[[:space:]]* ]] || { print -u2 "usage: velcro clip setup <ssh host>"; return 2; }
+  [[ -r $CLIP_HELPER ]] || { print -u2 "Mac clipboard needs velcro.app: curl -fsSL https://velcro.dgit.co/install | sh"; return 1; }
+  print "installing velcro-clip-host on $host …"
+  out=$(mic_ssh "$host" 'mkdir -p ~/.local/bin && cat >~/.local/bin/.velcro-clip-host.new &&
+    chmod +x ~/.local/bin/.velcro-clip-host.new && mv -f ~/.local/bin/.velcro-clip-host.new ~/.local/bin/velcro-clip-host &&
+    ~/.local/bin/velcro-clip-host install' <"$CLIP_HELPER" 2>&1)
+  local rc=$?
+  print -r -- "$out"
+  if (( rc )); then
+    [[ $out == *"Permission denied"* || $out == *"Could not resolve"* || $out == *"timed out"* ]] &&
+      print -u2 "velcro needs 'ssh $host' to work without a password prompt (an SSH key)."
+    return 1
+  fi
+  cmd_set clip.host "$host" && log "clip: set up on $host"
+}
+
+cmd_clip() {
+  local host=$(setting clip.host)
+  case ${1:-status} in
+    setup) clip_setup "$2" ;;
+    on)
+      if [[ -n $2 ]]; then clip_setup "$2" || return; host=$2
+      elif [[ -z $host ]]; then print -u2 "Which machine? velcro clip on <ssh host>"; return 2
+      fi
+      cmd_set clip.on yes || return
+      print "Mac clipboard on for $host: images you copy here paste with ⌃V in Claude Code there. Text stays on this Mac."
+      pgrep -xq velcro || print "velcro.app sends them; open velcro.app (it isn't running)."
+      ;;
+    off) cmd_set clip.on no && print "Mac clipboard off" ;;
+    remove)
+      [[ -n $host ]] || { print "Mac clipboard isn't set up"; return 0; }
+      cmd_set clip.on no
+      mic_ssh "$host" '~/.local/bin/velcro-clip-host remove && rm -f ~/.local/bin/velcro-clip-host' >/dev/null ||
+        { print -u2 "couldn't reach $host to remove velcro-clip-host; try again when it's up"; return 1; }
+      print "removed velcro-clip-host (and its xclip and wl-paste) from $host"
+      cmd_set clip.host
+      ;;
+    status)
+      if [[ -z $host ]]; then print "Mac clipboard: not set up (velcro clip on <ssh host>)"; return 0; fi
+      local s=; [[ -r $CLIP_STATUS ]] && s=$(<"$CLIP_STATUS")
+      if is_on clip.on; then
+        pgrep -xq velcro || s="velcro.app isn't running"
+        print -r -- "Mac clipboard → $host: on${s:+ ($s)}"
+      else
+        print -r -- "Mac clipboard → $host: off"
+      fi
+      ;;
+    *) print -u2 "usage: velcro clip [status | setup <host> | on [<host>] | off | remove]"; return 2 ;;
+  esac
+}
+
 # Transcribe: an audio file (a voice memo from Slack, a recording) to text through the speech-to-text
 # Claude Code's /voice uses, or ChatGPT's that Codex uses, with the user's own login to each (whichever is
 # signed in, in transcribe.engine order). velcro-transcribe does the talking; this adds the settings, the
@@ -1145,6 +1211,9 @@ velcro $VERSION — keep network shares stuck to your Mac
   velcro mic on <ssh host>   lend this Mac's microphone to a Linux machine you SSH into, for voice
                              input there (Claude Code /voice); open only while it records
   velcro mic off | status | remove
+  velcro clip on <ssh host>  images you copy on this Mac paste with ⌃V in Claude Code on a Linux
+                             machine you SSH into; text and passwords stay here
+  velcro clip off | status | remove
   velcro transcribe <file>   audio file to text, through the speech-to-text Claude Code's /voice
                              uses or ChatGPT's (Codex), with your own login (--lang ko, --json,
                              --engine codex, --no-fallback). Not a public API: only your own login
@@ -1167,6 +1236,8 @@ settings ($SETTINGS):
   mic.on        yes while lending it (no)
   mic.warm      seconds the microphone stays open after a recording, so the next one starts
                 at once (0)
+  clip.host     the SSH host that gets copied images (velcro clip setup <host> sets it)
+  clip.on       yes while sending them (no)
   transcribe.lang      language spoken in the files, e.g. ko (${DEFAULTS[transcribe.lang]})
   transcribe.engine    engines to try in order, each only if you're signed in to it
                        (${DEFAULTS[transcribe.engine]}): claude is Claude Code's, codex ChatGPT's with
@@ -1212,6 +1283,7 @@ case ${1:-help} in
   recorder|recorders) shift; cmd_recorder "$@" ;;
   send)        shift; cmd_send "$@" ;;
   mic)         shift; cmd_mic "$@" ;;
+  clip)        shift; cmd_clip "$@" ;;
   transcribe)  shift; cmd_transcribe "$@" ;;
   recordings)  shift; cmd_recordings "$@" ;;
   settings)    cmd_settings ;;

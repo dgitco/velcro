@@ -210,6 +210,7 @@ final class Importer: ObservableObject {
 
 /// Recent images and files copied on this Mac, offered in the menu to send to the inbox folder.
 /// Watching is read-only: the clipboard only changes when an item is clicked, to the sent path.
+/// Copied images (never text) also go to ClipSender, for ⌃V on a Linux machine when that's on.
 final class Clipboard: ObservableObject {
     static let shared = Clipboard()
 
@@ -260,8 +261,12 @@ final class Clipboard: ObservableObject {
                 let icon = NSWorkspace.shared.icon(forFile: url.path)
                 add(Clip(url: url, title: url.lastPathComponent, thumbnail: Self.thumbnail(icon)))
             }
+            if ClipSender.shared.sending, let png = urls.lazy.compactMap(Self.png(fromFile:)).first {
+                ClipSender.shared.copied(png)
+            }
         } else if let png = Self.png(from: pasteboard) {
             saveImage(png)
+            if !Self.isText(pasteboard) { ClipSender.shared.copied(png) }
         }
     }
 
@@ -305,6 +310,25 @@ final class Clipboard: ObservableObject {
         if let png = pasteboard.data(forType: .png) { return png }
         guard let tiff = pasteboard.data(forType: .tiff), let bitmap = NSBitmapImageRep(data: tiff)
         else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
+    /// Excel cells or a Word paragraph come with a picture of themselves: that copy is text. A
+    /// browser's Copy Image puts the image's address there as text too, and is still an image.
+    private static func isText(_ pasteboard: NSPasteboard) -> Bool {
+        guard let text = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return false }
+        let oneURL = text.rangeOfCharacter(from: .whitespacesAndNewlines) == nil && URL(string: text)?.scheme != nil
+        return !oneURL
+    }
+
+    /// An image file copied in Finder, as PNG; nil for any other file (or one over 50 MB).
+    private static func png(fromFile url: URL) -> Data? {
+        guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
+              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 50 << 20
+        else { return nil }
+        if type.conforms(to: .png) { return try? Data(contentsOf: url) }
+        guard let data = try? Data(contentsOf: url), let bitmap = NSBitmapImageRep(data: data) else { return nil }
         return bitmap.representation(using: .png, properties: [:])
     }
 
