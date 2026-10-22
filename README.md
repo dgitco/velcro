@@ -142,7 +142,7 @@ velcro clip off
 
 `velcro clip on <host>` copies a small helper, `velcro-clip-host`, to `~/.local/bin` there and links `xclip` and `wl-paste` next to it to the helper. While Mac Clipboard is on, each image you copy on the Mac (a screenshot with ⌘⌃⇧4, an image copied in an app, an image file copied in Finder) goes over SSH as PNG, replacing the one before. When Claude Code there asks `xclip` or `wl-paste` for an image, the helper answers with it for 10 minutes; anything else, like text, goes to the real `xclip` or `wl-paste` if the server has one.
 
-- Only images leave the Mac. Text, other files, and anything a password manager marks as private never do.
+- Only images leave the Mac. Text (including the picture of it some apps, like Excel, copy along with it), other files, and anything a password manager marks as private never do.
 - No account, server, or relay: the image goes straight from your Mac to that machine over your own SSH, and is kept in `~/.local/state/velcro/clip` there, readable only by you.
 - `~/.local/bin` has to come before `/usr/bin` on the server's `PATH` where Claude Code runs (most shells set it up that way); setup warns if a real `xclip` would answer first. It never replaces an `xclip` or `wl-paste` that isn't velcro's.
 - velcro.app does the sending. A command-only install can't.

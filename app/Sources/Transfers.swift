@@ -261,10 +261,13 @@ final class Clipboard: ObservableObject {
                 let icon = NSWorkspace.shared.icon(forFile: url.path)
                 add(Clip(url: url, title: url.lastPathComponent, thumbnail: Self.thumbnail(icon)))
             }
-            if let png = urls.lazy.compactMap(Self.png(fromFile:)).first { ClipSender.shared.copied(png) }
+            if ClipSender.shared.sending, let png = urls.lazy.compactMap(Self.png(fromFile:)).first {
+                ClipSender.shared.copied(png)
+            }
         } else if let png = Self.png(from: pasteboard) {
             saveImage(png)
-            ClipSender.shared.copied(png)
+            // Excel, Word and others put a picture of copied text next to the text: that is text.
+            if Self.textTypes.isDisjoint(with: pasteboard.types ?? []) { ClipSender.shared.copied(png) }
         }
     }
 
@@ -311,9 +314,13 @@ final class Clipboard: ObservableObject {
         return bitmap.representation(using: .png, properties: [:])
     }
 
-    /// An image file copied in Finder, as PNG; nil for any other file.
+    private static let textTypes: Set<NSPasteboard.PasteboardType> = [.string, .rtf, .rtfd]
+
+    /// An image file copied in Finder, as PNG; nil for any other file (or one over 50 MB).
     private static func png(fromFile url: URL) -> Data? {
-        guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image) else { return nil }
+        guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
+              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 50 << 20
+        else { return nil }
         if type.conforms(to: .png) { return try? Data(contentsOf: url) }
         guard let data = try? Data(contentsOf: url), let bitmap = NSBitmapImageRep(data: data) else { return nil }
         return bitmap.representation(using: .png, properties: [:])

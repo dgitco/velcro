@@ -25,7 +25,9 @@ LIMIT = 50 * 1024 * 1024
 PNG = b"\x89PNG\r\n\x1a\n"
 TOOLS = ("xclip", "wl-paste")
 
-state_dir = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "velcro", "clip")
+# Always this folder: put runs in a non-interactive SSH shell, xclip in Claude Code's, and their
+# environments (XDG_STATE_HOME, say) can differ.
+state_dir = os.path.expanduser("~/.local/state/velcro/clip")
 image = os.path.join(state_dir, "image.png")
 me = os.path.realpath(__file__)
 

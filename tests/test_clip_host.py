@@ -28,7 +28,6 @@ class ClipHost(unittest.TestCase):
         self.real.mkdir()
         self.env = {
             'PATH': f'{self.bin}:{self.real}:/usr/bin:/bin',
-            'XDG_STATE_HOME': str(self.tmp / 'state'),
             'HOME': str(self.tmp),
         }
 
@@ -46,7 +45,7 @@ class ClipHost(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def kept(self):
-        return self.tmp / 'state' / 'velcro' / 'clip' / 'image.png'
+        return self.tmp / '.local' / 'state' / 'velcro' / 'clip' / 'image.png'
 
     def test_put_keeps_png_only_readable_by_owner(self):
         r = self.run_helper('put', input=PNG)

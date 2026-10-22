@@ -1077,8 +1077,9 @@ cmd_clip() {
     remove)
       [[ -n $host ]] || { print "Mac clipboard isn't set up"; return 0; }
       cmd_set clip.on no
-      mic_ssh "$host" '~/.local/bin/velcro-clip-host remove; rm -f ~/.local/bin/velcro-clip-host' >/dev/null &&
-        print "removed velcro-clip-host (and its xclip and wl-paste) from $host"
+      mic_ssh "$host" '~/.local/bin/velcro-clip-host remove && rm -f ~/.local/bin/velcro-clip-host' >/dev/null ||
+        { print -u2 "couldn't reach $host to remove velcro-clip-host; try again when it's up"; return 1; }
+      print "removed velcro-clip-host (and its xclip and wl-paste) from $host"
       cmd_set clip.host
       ;;
     status)

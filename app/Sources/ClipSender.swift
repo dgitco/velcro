@@ -20,10 +20,14 @@ final class ClipSender: ObservableObject {
     private var watching: AnyCancellable?
     /// Hosts this run already put the bundled velcro-clip-host on, so a failed update can't loop.
     private var updated: Set<String> = []
+    /// Counts copies, so a send retried after an install can tell a newer image came meanwhile.
+    private var copies = 0
 
-    private var wanted: Bool {
+    /// On, with a machine to send to: Clipboard asks before reading a copied file.
+    var sending: Bool {
         Store.shared.setting("clip.on") == "yes" && !host.isEmpty
     }
+    private var wanted: Bool { sending }
 
     func start() {
         // A write to an SSH session that just died must not end the app.
@@ -51,6 +55,7 @@ final class ClipSender: ObservableObject {
     /// Clipboard saw a new image. The newest one wins: a send still going is dropped.
     func copied(_ png: Data) {
         guard wanted else { return }
+        copies += 1
         send(png, to: host, retry: true)
     }
 
@@ -106,8 +111,11 @@ final class ClipSender: ObservableObject {
         // Not there yet (set up with an older velcro, or removed by hand): install it and try once more.
         if retry, process.terminationStatus == 127 || problem.contains("No such file"), !updated.contains(host) {
             updated.insert(host)
+            let copy = copies
             Task {
                 await install(on: host)
+                // Turned off, moved to another machine, or a newer image went out while installing.
+                guard wanted, host == self.host, copy == copies, ssh == nil else { return }
                 send(png, to: host, retry: false)
             }
             return
