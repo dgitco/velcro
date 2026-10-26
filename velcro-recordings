@@ -140,8 +140,18 @@ class Run:
                 r['file'] = m[0]
         latest = {}  # the same file imported again: the last line wins
         for r in recs:
+            if not self.inside(self.dir / r['file']):
+                # The folder may be a share others write to: an absolute path, ../ or a link leading out of it
+                # would have the engine read (and the transcript show) a file of this account's.
+                say(f"{r['file']}: outside {self.dir}, skipped")
+                continue
             latest[r['file']] = r
         return list(latest.values())
+
+    def inside(self, path):
+        """Whether path, with every link followed, is in the recordings folder."""
+        top = os.path.realpath(self.dir)
+        return os.path.commonpath([top, os.path.realpath(path)]) == top != os.path.realpath(path)
 
     def paths(self, rec):
         stem = Path(rec['file']).stem
@@ -170,6 +180,8 @@ class Run:
 
     def transcribe(self, rec):
         p = self.paths(rec)
+        if not self.inside(p['audio']):  # again: a link may have changed since records()
+            raise RuntimeError(f"{rec['file']}: outside {self.dir}")
         if rec.get('sha256'):
             got = sha256(p['audio'])
             if got != rec['sha256']:

@@ -268,5 +268,24 @@ class Command(Base):
         self.assertFalse((home / '.local/state/velcro').exists())
 
 
+class SharedFolder(Base):
+    """recordings.dir and the output folder are often shares other people can write to."""
+
+    def test_manifest_cannot_point_outside_the_folder(self):
+        secret = self.tmp / 'secret.WAV'
+        secret.write_bytes(b'not yours')
+        (self.dir / 'link.WAV').symlink_to(secret)
+        (self.dir / 'real.WAV').write_bytes(b'mine')
+        (self.dir / 'inside.WAV').symlink_to(self.dir / 'real.WAV')  # a link that stays inside is fine
+        with open(self.dir / '.velcro-import.jsonl', 'a') as f:
+            for name in (str(secret), '../secret.WAV', 'link.WAV', 'inside.WAV'):
+                f.write(json.dumps({'file': name, 'imported_at': '2026-10-21T10:00:00+09:00'}) + '\n')
+        rc, log = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), ['inside.json', 'inside.txt'])
+        for name in (str(secret), '../secret.WAV', 'link.WAV'):
+            self.assertIn(f'{name}: outside {self.dir}, skipped', log)
+
+
 if __name__ == '__main__':
     unittest.main()
