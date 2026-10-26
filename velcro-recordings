@@ -36,6 +36,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 
@@ -91,10 +92,19 @@ def run_limited(argv, timeout, env=None):
 
 
 def put(path, data):
-    """Write through a temporary name, so a half-written file never has the real name."""
-    tmp = path.with_name(f'.{path.name}.part')
-    tmp.write_text(data)
-    os.replace(tmp, path)
+    """Write through a temporary name, so a half-written file never has the real name. The temporary file
+    is a new one (mkstemp: never an existing name or a link someone left in a shared folder)."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f'.{path.name}.', suffix='.part')
+    try:
+        mask = os.umask(0)
+        os.umask(mask)
+        os.fchmod(fd, 0o666 & ~mask)  # what a plain open() would have given, not mkstemp's 0600
+        with os.fdopen(fd, 'w') as f:
+            f.write(data)
+        os.replace(tmp, path)  # replaces a link at path itself, never what it points to
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 class Run:

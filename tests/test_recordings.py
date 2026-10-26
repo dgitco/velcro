@@ -286,6 +286,19 @@ class SharedFolder(Base):
         for name in (str(secret), '../secret.WAV', 'link.WAV'):
             self.assertIn(f'{name}: outside {self.dir}, skipped', log)
 
+    def test_planted_part_link_does_not_overwrite_a_file_outside(self):
+        self.add('p.WAV')
+        victim = self.tmp / 'victim'
+        victim.write_text('keep me')
+        self.out.mkdir()
+        (self.out / '.p.txt.part').symlink_to(victim)
+        (self.out / '.p.json.part').symlink_to(victim)
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual(victim.read_text(), 'keep me')
+        self.assertEqual((self.out / 'p.txt').read_text(), 'heard: p.WAV\n')
+        self.assertFalse((self.out / 'p.txt').is_symlink())
+
 
 if __name__ == '__main__':
     unittest.main()
