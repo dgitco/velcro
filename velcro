@@ -1139,14 +1139,17 @@ cmd_transcribe() {
   done
   [[ -n $codex ]] && args+=(--codex "$codex")
   # The helper's messages go to the terminal afterwards; velcro.app gets a notification instead.
-  local err=$(mktemp "${TMPDIR:-/tmp}/velcro-transcribe.XXXXXX")
+  # A folder of its own (mktemp -d, 0700): a name next to a temp file in /tmp is one anyone could take first.
+  local tmp
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/velcro-transcribe.XXXXXX") || { print -u2 "couldn't make a temporary folder"; return 1; }
+  local err=$tmp/messages
+  : >"$err"
   if py=$(transcribe_python 2>>"$err"); then
-    text=$("$py" "$TRANSCRIBE_HELPER" "${args[@]}" --engine-file "$err.engine" -- "$file" 2>>"$err"); rc=$?
-    (( rc )) || { [[ -s $err.engine ]] && engine=$(<"$err.engine") || engine=${engines[1]}; }
+    text=$("$py" "$TRANSCRIBE_HELPER" "${args[@]}" --engine-file "$tmp/engine" -- "$file" 2>>"$err"); rc=$?
+    (( rc )) || { [[ -s $tmp/engine ]] && engine=$(<"$tmp/engine") || engine=${engines[1]}; }
   else
     rc=1
   fi
-  rm -f "$err.engine"
   if (( rc )) && [[ -n $fallback ]]; then
     # The setting is a command line; the file goes last. A leading ~ means the home folder.
     cmd=("${(Q@)${(z)fallback}}"); cmd[1]=${cmd[1]/#\~/$HOME}
@@ -1157,7 +1160,7 @@ cmd_transcribe() {
   fi
   local why=$(tail -n 1 "$err" 2>/dev/null)
   [[ -z $VELCRO_APP ]] && cat "$err" >&2
-  rm -f "$err"
+  rm -rf -- "${tmp:?}"
   if (( rc )); then
     [[ -n $VELCRO_APP ]] && notify "Couldn't transcribe ${file:t}: ${why#velcro-transcribe: }"
     return 1

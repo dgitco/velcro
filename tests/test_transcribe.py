@@ -243,6 +243,32 @@ class ChatGPT(unittest.TestCase):
         self.assertEqual(sent, [('memo.ogg', 'audio/ogg', b'OggS...')])
 
 
+class Ffmpeg(unittest.TestCase):
+    """A file on a share is decoded as audio only: no playlists, no concat lists, nothing but local files."""
+
+    def test_ffmpeg_reads_only_local_audio_formats(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / 'bin').mkdir()
+        argv_file = tmp / 'argv.json'
+        stub = tmp / 'bin' / 'ffmpeg'
+        stub.write_text(f'#!{sys.executable}\nimport json, sys\nopen({str(argv_file)!r}, "w").write(json.dumps(sys.argv[1:]))\n'
+                        'open(sys.argv[-1], "wb").write(b"\\0\\0")\n')
+        stub.chmod(0o755)
+        memo = tmp / 'memo.m3u8'
+        memo.write_text('#EXTM3U\n/etc/hostname\n')
+        with unittest.mock.patch.dict(os.environ, {'PATH': f"{tmp / 'bin'}{os.pathsep}{os.environ['PATH']}"}):
+            self.assertEqual(vt.to_pcm(memo), b'\0\0')
+        argv = json.loads(argv_file.read_text())
+        i = argv.index('-i')
+        opts = dict(zip(argv[:i], argv[1:i]))
+        self.assertEqual(opts.get('-protocol_whitelist'), 'file')
+        allowed = set(opts.get('-format_whitelist', '').split(','))
+        self.assertTrue({'wav', 'mp3', 'mov', 'ogg'} <= allowed, allowed)
+        self.assertFalse(allowed & {'hls', 'concat', 'applehttp', 'ffconcat', 'image2', 'lavfi'}, allowed)
+        self.assertEqual(argv[i + 1], f'file:{memo}')
+
+
 class Engines(unittest.TestCase):
     def test_first_engine_with_text_wins_in_order(self):
         tried = []
@@ -367,6 +393,24 @@ class Fallback(unittest.TestCase):
         for bad in (['whisper'], ['claude', 'claude'], ['claude codex']):
             self.assertEqual(self.velcro('set', 'transcribe.engine', *bad).returncode, 2, bad)
         self.assertEqual(self.velcro('transcribe', '--engine', 'both', str(self.audio)).returncode, 2)
+
+    def test_engine_file_lives_in_a_folder_of_its_own(self):
+        """The helper's engine file was <random temp file>.engine: a name anyone could guess once the temp file showed up."""
+        tmpdir = self.tmp / 'tmp'
+        tmpdir.mkdir()
+        self.env['TMPDIR'] = str(tmpdir)
+        seen = self.tmp / 'seen.json'
+        self.helper.write_text('import json, os, stat, sys\na = sys.argv\nf = a[a.index("--engine-file") + 1]\n'
+                               'd = os.path.dirname(f)\nopen(f, "w").write("codex")\n'
+                               f'open({str(seen)!r}, "w").write(json.dumps([d, stat.S_IMODE(os.stat(d).st_mode)]))\n'
+                               'print("hello")\n')
+        r = self.velcro('transcribe', '--json', str(self.audio))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)['engine'], 'codex')
+        folder, mode = json.loads(seen.read_text())
+        self.assertEqual(Path(folder).parent, tmpdir)
+        self.assertEqual(mode, 0o700)
+        self.assertEqual(list(tmpdir.iterdir()), [])  # the folder is gone afterwards
 
     def test_engine_that_answered_is_in_the_json(self):
         self.helper_says(0, 'hello', engine='codex')
