@@ -394,6 +394,24 @@ class Fallback(unittest.TestCase):
             self.assertEqual(self.velcro('set', 'transcribe.engine', *bad).returncode, 2, bad)
         self.assertEqual(self.velcro('transcribe', '--engine', 'both', str(self.audio)).returncode, 2)
 
+    def test_engine_file_lives_in_a_folder_of_its_own(self):
+        """The helper's engine file was <random temp file>.engine: a name anyone could guess once the temp file showed up."""
+        tmpdir = self.tmp / 'tmp'
+        tmpdir.mkdir()
+        self.env['TMPDIR'] = str(tmpdir)
+        seen = self.tmp / 'seen.json'
+        self.helper.write_text('import json, os, stat, sys\na = sys.argv\nf = a[a.index("--engine-file") + 1]\n'
+                               'd = os.path.dirname(f)\nopen(f, "w").write("codex")\n'
+                               f'open({str(seen)!r}, "w").write(json.dumps([d, stat.S_IMODE(os.stat(d).st_mode)]))\n'
+                               'print("hello")\n')
+        r = self.velcro('transcribe', '--json', str(self.audio))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)['engine'], 'codex')
+        folder, mode = json.loads(seen.read_text())
+        self.assertEqual(Path(folder).parent, tmpdir)
+        self.assertEqual(mode, 0o700)
+        self.assertEqual(list(tmpdir.iterdir()), [])  # the folder is gone afterwards
+
     def test_engine_that_answered_is_in_the_json(self):
         self.helper_says(0, 'hello', engine='codex')
         r = self.velcro('transcribe', '--json', str(self.audio))
