@@ -243,6 +243,32 @@ class ChatGPT(unittest.TestCase):
         self.assertEqual(sent, [('memo.ogg', 'audio/ogg', b'OggS...')])
 
 
+class Ffmpeg(unittest.TestCase):
+    """A file on a share is decoded as audio only: no playlists, no concat lists, nothing but local files."""
+
+    def test_ffmpeg_reads_only_local_audio_formats(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / 'bin').mkdir()
+        argv_file = tmp / 'argv.json'
+        stub = tmp / 'bin' / 'ffmpeg'
+        stub.write_text(f'#!{sys.executable}\nimport json, sys\nopen({str(argv_file)!r}, "w").write(json.dumps(sys.argv[1:]))\n'
+                        'open(sys.argv[-1], "wb").write(b"\\0\\0")\n')
+        stub.chmod(0o755)
+        memo = tmp / 'memo.m3u8'
+        memo.write_text('#EXTM3U\n/etc/hostname\n')
+        with unittest.mock.patch.dict(os.environ, {'PATH': f"{tmp / 'bin'}{os.pathsep}{os.environ['PATH']}"}):
+            self.assertEqual(vt.to_pcm(memo), b'\0\0')
+        argv = json.loads(argv_file.read_text())
+        i = argv.index('-i')
+        opts = dict(zip(argv[:i], argv[1:i]))
+        self.assertEqual(opts.get('-protocol_whitelist'), 'file')
+        allowed = set(opts.get('-format_whitelist', '').split(','))
+        self.assertTrue({'wav', 'mp3', 'mov', 'ogg'} <= allowed, allowed)
+        self.assertFalse(allowed & {'hls', 'concat', 'applehttp', 'ffconcat', 'image2', 'lavfi'}, allowed)
+        self.assertEqual(argv[i + 1], f'file:{memo}')
+
+
 class Engines(unittest.TestCase):
     def test_first_engine_with_text_wins_in_order(self):
         tried = []

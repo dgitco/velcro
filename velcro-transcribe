@@ -76,6 +76,10 @@ def wav_pcm16k(path):
     return None
 
 
+# What ffmpeg may read a recording or voice memo as (demuxer names, ffmpeg -demuxers).
+AUDIO_DEMUXERS = 'wav,w64,mp3,mov,matroska,ogg,flac,aac,caf,aiff,amr,wv'
+
+
 def to_pcm(path):
     """Any audio file → 16 kHz mono s16le bytes."""
     pcm = wav_pcm16k(path)
@@ -84,7 +88,10 @@ def to_pcm(path):
     with tempfile.TemporaryDirectory(prefix='velcro-transcribe-') as tmp:
         if shutil.which('ffmpeg'):
             out = Path(tmp) / 'audio.s16'
-            cmd = ['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', str(path),
+            # Audio formats only, local files only: a playlist (.m3u8) or concat list on a share would
+            # otherwise have ffmpeg read files it points to, or open URLs.
+            cmd = ['ffmpeg', '-nostdin', '-v', 'error', '-y', '-protocol_whitelist', 'file',
+                   '-format_whitelist', AUDIO_DEMUXERS, '-i', f'file:{path}',
                    '-vn', '-ac', '1', '-ar', str(RATE), '-f', 's16le', '-c:a', 'pcm_s16le', str(out)]
         elif shutil.which('afconvert'):
             out = Path(tmp) / 'audio.wav'
