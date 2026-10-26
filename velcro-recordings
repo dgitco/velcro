@@ -34,6 +34,7 @@ import os
 from pathlib import Path
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -52,12 +53,16 @@ def say(*a):
     print(time.strftime('%H:%M:%S'), *a, flush=True)
 
 
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for b in iter(lambda: f.read(1 << 20), b''):
-            h.update(b)
-    return h.hexdigest()
+def opened_path(fd):
+    """Where an open file really is (every link resolved by the kernel), or None where that can't be asked."""
+    try:
+        if os.path.isdir('/proc/self/fd'):
+            return os.readlink(f'/proc/self/fd/{fd}')
+        if hasattr(fcntl, 'F_GETPATH'):  # macOS
+            return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).rstrip(b'\0'))
+    except OSError:
+        pass
+    return None
 
 
 def command(line, **fill):
@@ -152,7 +157,8 @@ class Run:
         for r in recs:
             if not self.inside(self.dir / r['file']):
                 # The folder may be a share others write to: an absolute path, ../ or a link leading out of it
-                # would have the engine read (and the transcript show) a file of this account's.
+                # would have the engine read (and the transcript show) a file of this account's. This only
+                # skips them early; copy_in() is what keeps a link swapped in later out.
                 say(f"{r['file']}: outside {self.dir}, skipped")
                 continue
             latest[r['file']] = r
@@ -166,8 +172,7 @@ class Run:
     def paths(self, rec):
         stem = Path(rec['file']).stem
         return {'audio': self.dir / rec['file'], 'txt': self.out / f'{stem}.txt', 'json': self.out / f'{stem}.json',
-                'engine_json': self.out / f'.{stem}.engine.json',
-                'tidy': self.out / f'{stem}.tidy.txt', 'deliver': self.out / f'{stem}.deliver.txt'}
+                        'tidy': self.out / f'{stem}.tidy.txt', 'deliver': self.out / f'{stem}.deliver.txt'}
 
     def next_step(self, rec):
         p = self.paths(rec)
@@ -188,23 +193,50 @@ class Run:
 
     # ---- steps ----
 
+    def copy_in(self, rec, path, work):
+        """Copy the recording into work, and its SHA-256. Anyone who writes to the folder can turn the file into
+        a link at any moment, so the check is made on the open file itself and the engine only sees the copy."""
+        real = os.path.realpath(path)
+        try:  # O_NONBLOCK: a FIFO left there must not hang the run (it fails the S_ISREG check below)
+            fd = os.open(real, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as e:
+            raise RuntimeError(f"{rec['file']}: can't open it: {e.strerror}")
+        with os.fdopen(fd, 'rb') as f:
+            st = os.fstat(fd)
+            where = opened_path(fd)
+            if where is None:  # no /proc or F_GETPATH: the open file must be the one at the checked path
+                at = os.lstat(real)
+                where = real if (at.st_dev, at.st_ino) == (st.st_dev, st.st_ino) else None
+            if not stat.S_ISREG(st.st_mode) or not where or not self.inside(where):
+                raise RuntimeError(f"{rec['file']}: outside {self.dir} or not a file")
+            (work / 'in').mkdir()
+            copy, h = work / 'in' / Path(rec['file']).name, hashlib.sha256()
+            with open(copy, 'xb') as out:
+                for b in iter(lambda: f.read(1 << 20), b''):
+                    h.update(b)
+                    out.write(b)
+        return copy, h.hexdigest()
+
     def transcribe(self, rec):
+        # A private folder (0700, in the state folder, not the share) for the copy and the engine's JSON.
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='velcro-rec-', dir=self.state_dir) as work:
+            return self.transcribe_in(rec, Path(work))
+
+    def transcribe_in(self, rec, work):
         p = self.paths(rec)
-        if not self.inside(p['audio']):  # again: a link may have changed since records()
-            raise RuntimeError(f"{rec['file']}: outside {self.dir}")
-        if rec.get('sha256'):
-            got = sha256(p['audio'])
-            if got != rec['sha256']:
-                raise RuntimeError(f"{rec['file']}: SHA-256 doesn't match the import record")
+        audio, got = self.copy_in(rec, p['audio'], work)
+        if rec.get('sha256') and got != rec['sha256']:
+            raise RuntimeError(f"{rec['file']}: SHA-256 doesn't match the import record")
         limit = self.a.timeout or 1800 + float(rec.get('duration_s') or 3 * 3600) * 0.5
-        p['engine_json'].unlink(missing_ok=True)
+        engine_json = work / 'engine.json'
         t0 = time.time()
         if self.a.engine in TRANSCRIBE:
-            argv = [self.a.velcro, 'transcribe', '--json', '--engine', self.a.engine] + (['--lang', self.a.lang] if self.a.lang else []) + [str(p['audio'])]
+            argv = [self.a.velcro, 'transcribe', '--json', '--engine', self.a.engine] + (['--lang', self.a.lang] if self.a.lang else []) + [str(audio)]
         else:
-            argv, has_file = command(self.a.engine, file=str(p['audio']), json=str(p['engine_json']))
+            argv, has_file = command(self.a.engine, file=str(audio), json=str(engine_json))
             if not has_file:
-                argv.append(str(p['audio']))
+                argv.append(str(audio))
         try:
             r = run_limited(argv, limit)
         except subprocess.TimeoutExpired:
@@ -215,14 +247,15 @@ class Run:
         if self.a.engine in TRANSCRIBE:
             detail = json.loads(text)
             text = detail.pop('text', '')
-        elif p['engine_json'].exists():
+            if 'file' in detail:
+                detail['file'] = str(p['audio'])  # the recording, not the private copy
+        elif engine_json.exists():
             try:
-                detail = json.loads(p['engine_json'].read_text())
+                detail = json.loads(engine_json.read_text())
             except ValueError:
                 detail = None
         if not text.strip():
             raise RuntimeError('the engine printed no text')
-        p['engine_json'].unlink(missing_ok=True)
         doc = {'file': rec['file'], 'sha256': rec.get('sha256'), 'duration_s': rec.get('duration_s'),
                'engine': self.a.engine if self.a.engine in TRANSCRIBE else 'command', 'command': argv[0],
                'wall_s': round(time.time() - t0), 'at': now_iso(), 'detail': detail}

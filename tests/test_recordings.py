@@ -95,7 +95,9 @@ class Steps(Base):
         self.engine = script(self.bin / 'engine2', 'echo "{\\"chunks\\": 3}" > "$4"; echo "text of $2"\n')
         self.engine += ' --file {file} --json {json}'
         self.run_helper()
-        self.assertEqual((self.out / 'a.txt').read_text(), f'text of {self.dir / "a.WAV"}\n')
+        text = (self.out / 'a.txt').read_text()
+        self.assertTrue(text.startswith('text of ') and text.endswith('/a.WAV\n'), text)
+        self.assertNotIn(str(self.dir), text)  # the engine gets a private copy, never the shared file
         self.assertEqual(json.loads((self.out / 'a.json').read_text())['detail'], {'chunks': 3})
         self.assertEqual([p.name for p in self.out.glob('.*')], [])  # the engine's JSON is not left behind
 
@@ -109,8 +111,9 @@ class Steps(Base):
                     '--engine', engine, '--velcro', fake_velcro, '--lang', 'ko']
             with mock.patch('sys.stdout', io.StringIO()):
                 vr.main(argv)
-            self.assertEqual((self.bin / 'args').read_text().strip(),
-                             f'transcribe --json --engine {engine} --lang ko {self.dir / name}')
+            args = (self.bin / 'args').read_text().strip()
+            self.assertTrue(args.startswith(f'transcribe --json --engine {engine} --lang ko {self.state}/'), args)
+            self.assertTrue(args.endswith(f'/{name}'), args)
             stem = name[:-4]
             self.assertEqual((self.out / f'{stem}.txt').read_text(), '안녕하세요\n')
             self.assertEqual(json.loads((self.out / f'{stem}.json').read_text())['engine'], engine)
@@ -298,6 +301,68 @@ class SharedFolder(Base):
         self.assertEqual(victim.read_text(), 'keep me')
         self.assertEqual((self.out / 'p.txt').read_text(), 'heard: p.WAV\n')
         self.assertFalse((self.out / 'p.txt').is_symlink())
+
+
+    def test_swapping_the_file_for_a_link_after_the_check_reads_nothing_outside(self):
+        """A share user can turn x.WAV into a link between any check and the engine opening it."""
+        secret = self.tmp / 'secret'
+        secret.write_text('the server account\'s secret')
+        rec = self.add('x.WAV')
+        del rec['sha256']  # whoever writes the manifest can leave the hash out
+        (self.dir / '.velcro-import.jsonl').write_text(json.dumps(rec) + '\n')
+        self.engine = script(self.bin / 'cat-engine', 'cat "$1"\n')
+        checked = vr.Run.inside
+
+        def check_then_swap(run, path):  # every check sees the real file, whatever opens it next sees the link
+            x = run.dir / 'x.WAV'
+            x.unlink()
+            x.write_bytes(b'RIFFaudio')
+            ok = checked(run, path)
+            x.unlink()
+            x.symlink_to(secret)
+            return ok
+        with mock.patch.object(vr.Run, 'inside', check_then_swap):
+            self.run_helper()
+        for f in self.out.iterdir():
+            self.assertNotIn('secret', f.read_text(), f.name)
+        self.assertIn('outside', self.state_doc()['failures']['x.WAV']['error'])
+
+    def test_without_proc_the_open_file_is_matched_by_inode(self):
+        """A Mac has no /proc (F_GETPATH there); with neither, the open file must be the one at the checked path."""
+        secret = self.tmp / 'secret'
+        secret.write_text('secret')
+        self.add('ok.WAV')
+        rec = {'file': 'link.WAV', 'imported_at': '2026-10-21T10:00:00+09:00'}
+        (self.dir / 'link.WAV').write_bytes(b'x')
+        with open(self.dir / '.velcro-import.jsonl', 'a') as f:
+            f.write(json.dumps(rec) + '\n')
+        run = vr.Run(mock.Mock(dir=str(self.dir), out=str(self.out), state=str(self.state)))
+        work = self.tmp / 'work'
+        with mock.patch.object(vr, 'opened_path', return_value=None):
+            for name in ('ok.WAV', 'link.WAV'):
+                (work / name).mkdir(parents=True)
+            copy, _ = run.copy_in({'file': 'ok.WAV'}, self.dir / 'ok.WAV', work / 'ok.WAV')
+            self.assertEqual(copy.read_bytes(), b'RIFFaudio')
+            (self.dir / 'link.WAV').unlink()
+            (self.dir / 'link.WAV').symlink_to(secret)
+            with self.assertRaisesRegex(RuntimeError, 'outside'):
+                run.copy_in(rec, self.dir / 'link.WAV', work / 'link.WAV')
+
+    def test_engine_json_is_private_and_a_planted_link_is_ignored(self):
+        victim = self.tmp / 'server.json'
+        victim.write_text('{"token": "server-secret"}')
+        self.add('a.WAV')
+        seen = self.tmp / 'json-path'
+        # The engine plants the link itself: what a share user could do while it runs.
+        self.engine = script(self.bin / 'engine3', f'echo "$2" > {seen}; ln -s {victim} "{self.out}/.a.engine.json"; echo text\n')
+        self.engine += ' --json {json}'
+        self.run_helper()
+        self.assertNotIn('server-secret', (self.out / 'a.json').read_text())
+        json_path = Path(seen.read_text().strip())
+        for shared in (self.dir, self.out):
+            self.assertNotEqual(os.path.commonpath([json_path, shared]), str(shared))
+        self.assertFalse(json_path.parent.exists())  # removed afterwards
+        self.assertEqual(victim.read_text(), '{"token": "server-secret"}')
 
 
 if __name__ == '__main__':
