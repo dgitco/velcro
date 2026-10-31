@@ -364,6 +364,48 @@ class SharedFolder(Base):
         self.assertFalse(json_path.parent.exists())  # removed afterwards
         self.assertEqual(victim.read_text(), '{"token": "server-secret"}')
 
+    def private_folder(self):
+        """A folder of the server account's, outside the share, with a file a transcript could replace."""
+        private = self.tmp / 'private'
+        private.mkdir()
+        (private / 'notes.txt').write_text('keep me')
+        return private
+
+    def test_default_output_folder_planted_as_a_link_writes_nothing_outside(self):
+        """The default output folder is <dir>/_velcro, inside the share: a share user can make it a link first."""
+        private = self.private_folder()
+        self.out = self.dir / '_velcro'
+        self.out.symlink_to(private)
+        self.add('notes.WAV')
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ['notes.txt'])
+        self.assertEqual((private / 'notes.txt').read_text(), 'keep me')
+        self.assertIn('outside', self.state_doc()['failures']['notes.WAV']['error'])
+
+    def test_output_folder_swapped_for_a_link_while_the_engine_runs_writes_nothing_outside(self):
+        private = self.private_folder()
+        self.out = self.dir / '_velcro'
+        self.add('notes.WAV')
+        # The engine does the swap itself: what a share user could do while it runs.
+        self.engine = script(self.bin / 'swap-engine',
+                             f'mv "{self.out}" "{self.dir}/_old" && ln -s "{private}" "{self.out}"; echo text\n')
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ['notes.txt'])
+        self.assertEqual((private / 'notes.txt').read_text(), 'keep me')
+
+    def test_output_folder_outside_the_recordings_may_be_a_link(self):
+        """recordings.out set by the user to a link of their own (outside the share) still works."""
+        real = self.tmp / 'transcripts'
+        real.mkdir()
+        self.out = self.tmp / 'out-link'
+        self.out.symlink_to(real)
+        self.add('a.WAV')
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual((real / 'a.txt').read_text(), 'heard: a.WAV\n')
+
 
 if __name__ == '__main__':
     unittest.main()

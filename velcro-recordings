@@ -32,6 +32,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import shlex
 import signal
 import stat
@@ -112,6 +113,27 @@ def put(path, data):
         raise
 
 
+def put_at(folder, name, data):
+    """put() into the open folder <folder> (a descriptor): the folder can't be swapped for a link meanwhile."""
+    while True:
+        tmp = f'.{name}.{secrets.token_hex(4)}.part'
+        try:  # 0o666 less the umask, as a plain open() gives
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666, dir_fd=folder)
+            break
+        except FileExistsError:
+            continue
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(data)
+        os.replace(tmp, name, src_dir_fd=folder, dst_dir_fd=folder)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=folder)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 class Run:
     def __init__(self, a):
         self.a = a
@@ -168,6 +190,22 @@ class Run:
         """Whether path, with every link followed, is in the recordings folder."""
         top = os.path.realpath(self.dir)
         return os.path.commonpath([top, os.path.realpath(path)]) == top != os.path.realpath(path)
+
+    def open_out(self):
+        """The output folder, open. The default one, <dir>/_velcro, is inside the recordings folder, where a share user
+        can make it a link to any folder of this account's (a transcript would then replace notes.txt there): when the
+        output folder is inside, the folder actually opened must be too. Write through the descriptor, not the path."""
+        fd = os.open(self.out, os.O_RDONLY | os.O_DIRECTORY)
+        top = os.path.abspath(self.dir)
+        if os.path.commonpath([top, os.path.abspath(self.out)]) == top:
+            where = opened_path(fd)
+            if where is None:  # no /proc or F_GETPATH: the open folder must be the one at the path, not a link
+                at, st = os.lstat(self.out), os.fstat(fd)
+                where = str(self.out) if stat.S_ISDIR(at.st_mode) and (at.st_dev, at.st_ino) == (st.st_dev, st.st_ino) else None
+            if not where or not self.inside(where):
+                os.close(fd)
+                raise RuntimeError(f'{self.out}: outside {self.dir} or not a folder')
+        return fd
 
     def paths(self, rec):
         stem = Path(rec['file']).stem
@@ -259,8 +297,12 @@ class Run:
         doc = {'file': rec['file'], 'sha256': rec.get('sha256'), 'duration_s': rec.get('duration_s'),
                'engine': self.a.engine if self.a.engine in TRANSCRIBE else 'command', 'command': argv[0],
                'wall_s': round(time.time() - t0), 'at': now_iso(), 'detail': detail}
-        put(p['txt'], text if text.endswith('\n') else text + '\n')
-        put(p['json'], json.dumps(doc, ensure_ascii=False, indent=1))  # last: marks the step done
+        out = self.open_out()
+        try:
+            put_at(out, p['txt'].name, text if text.endswith('\n') else text + '\n')
+            put_at(out, p['json'].name, json.dumps(doc, ensure_ascii=False, indent=1))  # last: marks the step done
+        finally:
+            os.close(out)
         return f"{len(text)} characters in {doc['wall_s']} s"
 
     def hook(self, rec, step):
@@ -276,7 +318,11 @@ class Run:
             raise RuntimeError(f'{step} took over {HOOK_TIMEOUT_S // 60} min, stopped')
         if r.returncode:
             raise RuntimeError(f'{step} failed (exit {r.returncode}): {(r.stderr or r.stdout).strip()[-300:]}')
-        put(p[step], r.stdout)
+        out = self.open_out()
+        try:
+            put_at(out, p[step].name, r.stdout)
+        finally:
+            os.close(out)
         return f'{step} ok'
 
     # ---- failures ----
