@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.10.0
+VERSION=0.10.1
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
