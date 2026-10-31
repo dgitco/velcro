@@ -184,7 +184,7 @@ class WS:
         status = head.split(b'\r\n', 1)[0].decode(errors='replace')
         if ' 101 ' not in status + ' ':
             raise ConnectionError('voice_stream refused the connection: ' + status)
-        self.parts, self.closed = [], False
+        self.parts, self.closed, self.close_code = [], False, None
 
     def _send(self, frame):
         self.sock.settimeout(20)
@@ -205,7 +205,7 @@ class WS:
                 self.buf = self.buf[used:]
                 if op == 0x8:
                     self.closed = True
-                    code = struct.unpack('!H', payload[:2])[0] if len(payload) >= 2 else 1005
+                    code = self.close_code = struct.unpack('!H', payload[:2])[0] if len(payload) >= 2 else 1005
                     raise EOFError(f'closed (code {code}) {payload[2:].decode(errors="replace")}'.strip())
                 if op == 0x9:
                     self._send(ws_frame(0xA, payload))
@@ -385,7 +385,11 @@ def transcribe(pcm, logins, language, pace=PACE):
         while not tr.endpoint_after_close and time.monotonic() < min(cap, idle):
             try:
                 msg = ws.recv(1.0)
-            except EOFError:
+            except EOFError as e:
+                # A server error (or restart) before the final endpoint: the text is likely cut short, so fail
+                # rather than pass on part of it as the whole. A normal close keeps the text so far.
+                if ws.close_code not in (None, 1000, 1005):
+                    raise Failed(f'voice_stream ended before the text was complete: {e}')
                 break
             if msg is not None:
                 tr.feed(msg, closing=True)

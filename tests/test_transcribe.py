@@ -420,3 +420,52 @@ class Fallback(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class StreamEnd(unittest.TestCase):
+    """How voice_stream ends decides whether the text is whole: a server error close is a failure (so the
+    next engine, or the next recordings run, gets the whole file), a normal close is not."""
+
+    def fake_ws(self, code):
+        class FakeWS:
+            close_code = None
+
+            def __init__(self, *a, **k):
+                # Text of the first part, then the stream ends before the final endpoint.
+                self.msgs = [json.dumps({'type': 'TranscriptText', 'data': 'first half'})]
+                self.closed = False
+
+            def send_text(self, s):
+                self.ended = self.ended or 'CloseStream' in s
+
+            def send_binary(self, b):
+                pass
+
+            ended = False
+
+            def recv(self, timeout):
+                if not self.ended:
+                    return None
+                if self.msgs:
+                    return self.msgs.pop(0)
+                self.closed, self.close_code = True, code
+                raise EOFError(f'closed (code {code})')
+
+            def close(self):
+                pass
+        return FakeWS
+
+    def run_stream(self, code):
+        with unittest.mock.patch.object(vt, 'WS', self.fake_ws(code)), \
+             unittest.mock.patch.object(vt, 'claude_token', return_value=('t', 'login')), \
+             unittest.mock.patch.object(vt, 'claude_version', return_value='1'), \
+             unittest.mock.patch.object(vt, 'say'):
+            return vt.transcribe(b'\0\0' * vt.RATE, [], 'en', pace=1000)
+
+    def test_server_error_close_is_a_failure(self):
+        with self.assertRaises(vt.Failed):
+            self.run_stream(1011)
+
+    def test_normal_close_keeps_the_text(self):
+        for code in (1000, 1005):
+            self.assertEqual(self.run_stream(code), 'first half')

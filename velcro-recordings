@@ -86,7 +86,7 @@ def run_limited(argv, timeout, env=None):
                          env=env, start_new_session=True)
     try:
         out, err = p.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except BaseException:  # the time limit, or this run being stopped (SIGTERM, ^C): the engine goes with it
         os.killpg(p.pid, signal.SIGTERM)
         try:
             p.communicate(timeout=30)
@@ -141,6 +141,9 @@ class Run:
         tag = hashlib.sha1(str(self.out.resolve()).encode()).hexdigest()[:10]
         self.state_file = self.state_dir / f'recordings-{tag}.json'
         self.lock_file = self.state_dir / f'recordings-{tag}.lock'
+        self.load()
+
+    def load(self):
         try:
             self.state = json.loads(self.state_file.read_text())
         except (FileNotFoundError, ValueError):
@@ -214,7 +217,15 @@ class Run:
         return fd
 
     def paths(self, rec):
+        # memo.wav and memo.m4a share a stem: the one transcribed first keeps memo.*, the other gets
+        # memo.m4a.*, so neither is taken for done by the other's transcript.
         stem = Path(rec['file']).stem
+        try:
+            owner = json.loads((self.out / f'{stem}.json').read_text()).get('file')
+        except (OSError, ValueError, AttributeError):
+            owner = None
+        if isinstance(owner, str) and unicodedata.normalize('NFC', owner) != unicodedata.normalize('NFC', rec['file']):
+            stem = rec['file']
         return {'audio': self.dir / rec['file'], 'txt': self.out / f'{stem}.txt', 'json': self.out / f'{stem}.json',
                         'tidy': self.out / f'{stem}.tidy.txt', 'deliver': self.out / f'{stem}.deliver.txt'}
 
@@ -379,6 +390,7 @@ class Run:
             except BlockingIOError:
                 say('another run is still going')
                 return 0
+            self.load()  # again, now that no other run can change it: what was read before may be stale
             return self.steps()
 
     def steps(self):
@@ -436,4 +448,6 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
+    # Stopped by a timer or kill: unwind (removing the private copy, stopping the engine) instead of vanishing.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     sys.exit(main())
