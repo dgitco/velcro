@@ -195,14 +195,20 @@ class Run:
         """The output folder, open. The default one, <dir>/_velcro, is inside the recordings folder, where a share user
         can make it a link to any folder of this account's (a transcript would then replace notes.txt there): when the
         output folder is inside, the folder actually opened must be too. Write through the descriptor, not the path."""
+        def within(path, top):  # path is top or under it, both already absolute
+            return os.path.commonpath([top, path]) == top
         fd = os.open(self.out, os.O_RDONLY | os.O_DIRECTORY)
-        top = os.path.abspath(self.dir)
-        if os.path.commonpath([top, os.path.abspath(self.out)]) == top:
+        tops = {os.path.abspath(self.dir), os.path.realpath(self.dir)}
+        out = os.path.abspath(self.out)
+        # Inside if its path is, whichever way the recordings folder is spelt, or if the folder that holds it really
+        # is (a link of the user's own pointing into the share): there its last part can be swapped by a share user.
+        if any(within(out, t) for t in tops) or within(os.path.realpath(os.path.dirname(out)), os.path.realpath(self.dir)):
             where = opened_path(fd)
             if where is None:  # no /proc or F_GETPATH: the open folder must be the one at the path, not a link
                 at, st = os.lstat(self.out), os.fstat(fd)
                 where = str(self.out) if stat.S_ISDIR(at.st_mode) and (at.st_dev, at.st_ino) == (st.st_dev, st.st_ino) else None
-            if not where or not self.inside(where):
+            # The recordings folder itself is allowed as the output folder (it was before).
+            if not where or not within(os.path.realpath(where), os.path.realpath(self.dir)):
                 os.close(fd)
                 raise RuntimeError(f'{self.out}: outside {self.dir} or not a folder')
         return fd
