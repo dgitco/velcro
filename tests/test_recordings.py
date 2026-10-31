@@ -364,6 +364,82 @@ class SharedFolder(Base):
         self.assertFalse(json_path.parent.exists())  # removed afterwards
         self.assertEqual(victim.read_text(), '{"token": "server-secret"}')
 
+    def private_folder(self):
+        """A folder of the server account's, outside the share, with a file a transcript could replace."""
+        private = self.tmp / 'private'
+        private.mkdir()
+        (private / 'notes.txt').write_text('keep me')
+        return private
+
+    def test_default_output_folder_planted_as_a_link_writes_nothing_outside(self):
+        """The default output folder is <dir>/_velcro, inside the share: a share user can make it a link first."""
+        private = self.private_folder()
+        self.out = self.dir / '_velcro'
+        self.out.symlink_to(private)
+        self.add('notes.WAV')
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ['notes.txt'])
+        self.assertEqual((private / 'notes.txt').read_text(), 'keep me')
+        self.assertIn('outside', self.state_doc()['failures']['notes.WAV']['error'])
+
+    def test_output_folder_swapped_for_a_link_while_the_engine_runs_writes_nothing_outside(self):
+        private = self.private_folder()
+        self.out = self.dir / '_velcro'
+        self.add('notes.WAV')
+        # The engine does the swap itself: what a share user could do while it runs.
+        self.engine = script(self.bin / 'swap-engine',
+                             f'mv "{self.out}" "{self.dir}/_old" && ln -s "{private}" "{self.out}"; echo text\n')
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ['notes.txt'])
+        self.assertEqual((private / 'notes.txt').read_text(), 'keep me')
+
+    def test_output_folder_outside_the_recordings_may_be_a_link(self):
+        """recordings.out set by the user to a link of their own (outside the share) still works."""
+        real = self.tmp / 'transcripts'
+        real.mkdir()
+        self.out = self.tmp / 'out-link'
+        self.out.symlink_to(real)
+        self.add('a.WAV')
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual((real / 'a.txt').read_text(), 'heard: a.WAV\n')
+
+    def test_output_folder_may_be_the_recordings_folder_itself(self):
+        """recordings.out = recordings.dir worked before the link check and still does."""
+        self.out = self.dir
+        self.add('a.WAV')
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual((self.dir / 'a.txt').read_text(), 'heard: a.WAV\n')
+
+    def test_planted_link_is_caught_when_the_two_settings_spell_the_share_differently(self):
+        """recordings.dir through a link (~/nas/rec), recordings.out by its real path: still inside the share."""
+        private = self.private_folder()
+        real = self.dir
+        self.dir = self.tmp / 'rec-link'
+        self.dir.symlink_to(real)
+        self.out = real / '_velcro'
+        self.out.symlink_to(private)
+        self.add('notes.WAV')
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ['notes.txt'])
+        self.assertEqual((private / 'notes.txt').read_text(), 'keep me')
+
+    def test_planted_link_is_caught_through_a_link_of_the_users_into_the_share(self):
+        """recordings.out = <a link of the user's to the share>/_velcro: its last part is still the share's."""
+        private = self.private_folder()
+        into = self.tmp / 'share-link'
+        into.symlink_to(self.dir)
+        (self.dir / '_velcro').symlink_to(private)
+        self.out = into / '_velcro'
+        self.add('notes.WAV')
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ['notes.txt'])
+
 
 if __name__ == '__main__':
     unittest.main()
