@@ -440,6 +440,80 @@ class SharedFolder(Base):
         self.assertEqual(rc, 0)
         self.assertEqual(sorted(p.name for p in private.iterdir()), ['notes.txt'])
 
+    def test_a_fifo_where_the_owner_json_would_be_does_not_hang_the_run(self):
+        """The output folder is in the share: a FIFO planted as <stem>.json must not stop every later run."""
+        import threading
+        self.out.mkdir()
+        os.mkfifo(self.out / 'memo.json')
+        self.add('memo.m4a')
+        done = []
+        t = threading.Thread(target=lambda: done.append(self.run_helper()), daemon=True)
+        t.start()
+        t.join(10)
+        self.assertTrue(done, 'the run hung on the FIFO')
+
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Reliability(Base):
+    """Restarts, overlapping runs and look-alike names must not lose a recording or its retry schedule."""
+
+    def test_same_name_different_type_each_gets_a_transcript(self):
+        # A recorder (or a manual upload) can leave memo.wav and memo.m4a side by side: both are recordings.
+        self.add('memo.wav', b'RIFFone')
+        self.add('memo.m4a', b'm4a-two')
+        self.run_helper()
+        texts = sorted(p.read_text() for p in self.out.glob('*.txt'))
+        self.assertEqual(texts, ['heard: memo.m4a\n', 'heard: memo.wav\n'])
+        _, out = self.run_helper(command='status')
+        self.assertEqual(out.count(' done'), 2, out)
+        # Again: nothing is transcribed twice.
+        _, out = self.run_helper()
+        self.assertIn('nothing new', out)
+
+    def test_run_that_waited_for_the_lock_keeps_the_failures_of_the_run_before(self):
+        # A timer run starts (reads the state) just as the previous run finishes: it must not act on, or
+        # write back, the state from before that run.
+        self.add('x.WAV')
+        calls = self.tmp / 'calls'
+        self.engine = script(self.bin / 'broken', f'echo x >> {calls}; exit 1\n')
+        late = vr.Run(mock.Mock(dir=str(self.dir), out=str(self.out), state=str(self.state), engine=self.engine,
+                                since='', tidy='', deliver='', alert='', timeout=0, budget=2400, lang=''))
+        self.run_helper()  # the earlier run: fails once, retry in 10 minutes
+        with mock.patch('sys.stdout', io.StringIO()):
+            late.run()
+        self.assertEqual(len(calls.read_text().splitlines()), 1)  # not retried early
+        self.assertEqual(self.state_doc()['failures']['x.WAV']['count'], 1)
+
+    def test_stopped_run_leaves_no_copy_and_no_engine_behind(self):
+        # The timer (or the user) stops a run mid-engine: the private copy of the recording goes, and so
+        # does the engine; the next run starts the step again.
+        self.add('s.WAV')
+        pidfile = self.tmp / 'engine.pid'
+        self.engine = script(self.bin / 'slow', f'echo $$ > {pidfile}; sleep 60\n')
+        p = subprocess.Popen([sys.executable, str(ROOT / 'velcro-recordings'), 'run', '--dir', str(self.dir),
+                              '--out', str(self.out), '--state', str(self.state), '--engine', self.engine],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            if pidfile.exists() and pidfile.read_text().strip():
+                break
+            time.sleep(0.1)
+        p.terminate()
+        p.wait(timeout=20)
+        engine = int(pidfile.read_text())
+        for _ in range(50):
+            try:
+                os.kill(engine, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(engine, 9)
+            self.fail('the engine kept running after the run was stopped')
+        self.assertEqual([q.name for q in self.state.glob('velcro-rec-*')], [])
+        self.assertFalse((self.out / 's.json').exists())
+        self.engine = script(self.bin / 'engine', 'echo "heard: $(basename "$1")"\n')
+        self.run_helper()
+        self.assertEqual((self.out / 's.txt').read_text(), 'heard: s.WAV\n')
