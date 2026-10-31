@@ -113,6 +113,20 @@ def put(path, data):
         raise
 
 
+def read_small(path, limit=1 << 20):
+    """A small regular file's text, or None. The output folder may be in a share others write to: a FIFO there
+    must not hang the run (it would hold the lock forever) and a link to /dev/zero must not fill the memory."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, 'rb') as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            return None
+        data = f.read(limit + 1)
+    return None if len(data) > limit else data.decode('utf-8', 'replace')
+
+
 def put_at(folder, name, data):
     """put() into the open folder <folder> (a descriptor): the folder can't be swapped for a link meanwhile."""
     while True:
@@ -221,8 +235,8 @@ class Run:
         # memo.m4a.*, so neither is taken for done by the other's transcript.
         stem = Path(rec['file']).stem
         try:
-            owner = json.loads((self.out / f'{stem}.json').read_text()).get('file')
-        except (OSError, ValueError, AttributeError):
+            owner = json.loads(read_small(self.out / f'{stem}.json')).get('file')
+        except (OSError, ValueError, AttributeError, TypeError):
             owner = None
         if isinstance(owner, str) and unicodedata.normalize('NFC', owner) != unicodedata.normalize('NFC', rec['file']):
             stem = rec['file']

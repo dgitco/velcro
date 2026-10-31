@@ -440,6 +440,18 @@ class SharedFolder(Base):
         self.assertEqual(rc, 0)
         self.assertEqual(sorted(p.name for p in private.iterdir()), ['notes.txt'])
 
+    def test_a_fifo_where_the_owner_json_would_be_does_not_hang_the_run(self):
+        """The output folder is in the share: a FIFO planted as <stem>.json must not stop every later run."""
+        import threading
+        self.out.mkdir()
+        os.mkfifo(self.out / 'memo.json')
+        self.add('memo.m4a')
+        done = []
+        t = threading.Thread(target=lambda: done.append(self.run_helper()), daemon=True)
+        t.start()
+        t.join(10)
+        self.assertTrue(done, 'the run hung on the FIFO')
+
 
 if __name__ == '__main__':
     unittest.main()
