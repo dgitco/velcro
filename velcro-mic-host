@@ -79,7 +79,16 @@ def stop_previous(me):
         f.write(me)
     try:
         os.kill(old, signal.SIGTERM)
-        for _ in range(40):
+        for i in range(1, 41):
+            time.sleep(0.05)
+            os.kill(old, 0)
+            if i % 10 == 0:
+                # A TERM landing just before it blocks reading stdin only sets a flag: the read isn't
+                # interrupted and the handler doesn't run. The next one wakes the read.
+                os.kill(old, signal.SIGTERM)
+        # Two microphones are worse than a Mac that isn't told; its child goes with it (PDEATHSIG).
+        os.kill(old, signal.SIGKILL)
+        for _ in range(20):
             time.sleep(0.05)
             os.kill(old, 0)
     except OSError:
