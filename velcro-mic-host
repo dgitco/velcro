@@ -45,9 +45,10 @@ recording = threading.Event()
 
 
 def say(line):
+    # No buffered stdout: the signal handler says things too, and a TERM landing during a flush would
+    # be a reentrant call, which ends the helper without telling the Mac it was replaced.
     with out_lock:
-        sys.stdout.write(line + "\n")
-        sys.stdout.flush()
+        os.write(1, (line + "\n").encode(errors="replace"))
 
 
 def problems():
