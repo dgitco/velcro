@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 
-VERSION = "3"  # velcro.app reinstalls this file when the one it ships says something else
+VERSION = "4"  # velcro.app reinstalls this file when the one it ships says something else
 NODE = "velcro-mic"
 RATE = 16000  # what velcro sends: mono, 16-bit
 # PipeWire's pipe source always buffers 8192 frames, half a second at 16 kHz. That much delay
@@ -45,9 +45,10 @@ recording = threading.Event()
 
 
 def say(line):
+    # No buffered stdout: the signal handler says things too, and a TERM landing during a flush would
+    # be a reentrant call, which ends the helper without telling the Mac it was replaced.
     with out_lock:
-        sys.stdout.write(line + "\n")
-        sys.stdout.flush()
+        os.write(1, (line + "\n").encode(errors="replace"))
 
 
 def problems():
@@ -79,7 +80,16 @@ def stop_previous(me):
         f.write(me)
     try:
         os.kill(old, signal.SIGTERM)
-        for _ in range(40):
+        for i in range(1, 41):
+            time.sleep(0.05)
+            os.kill(old, 0)
+            if i % 10 == 0:
+                # A TERM landing just before it blocks reading stdin only sets a flag: the read isn't
+                # interrupted and the handler doesn't run. The next one wakes the read.
+                os.kill(old, signal.SIGTERM)
+        # Two microphones are worse than a Mac that isn't told; its child goes with it (PDEATHSIG).
+        os.kill(old, signal.SIGKILL)
+        for _ in range(20):
             time.sleep(0.05)
             os.kill(old, 0)
     except OSError:
@@ -237,14 +247,31 @@ def main():
         print("usage: velcro-mic-host [--check | <name of the Mac>]", file=sys.stderr)
         sys.exit(2)
     me = sys.argv[1] if len(sys.argv) > 1 else "a Mac"
+
+    def quit(signum, _):
+        try:
+            by = open(taken).read()
+            if signum == signal.SIGTERM and by != me:
+                say(f"error taken over by {by}")
+        except OSError:
+            pass
+        finish(0)
+
     p = problems()
     if p:
         say("error " + "; ".join(p))
         sys.exit(1)
+    # Before stop_previous: a newer Mac may already be replacing this one, and the Mac it replaces
+    # has to hear so, or it reconnects and the two take turns.
+    signal.signal(signal.SIGTERM, quit)
+    signal.signal(signal.SIGHUP, quit)
     os.makedirs(state_dir, mode=0o700, exist_ok=True)
-    stop_previous(me)
-    with open(pidfile, "w") as f:
-        f.write(f"{os.getpid()} {me}")
+    # Two Macs connecting at once would both find no one to replace and both keep running.
+    with open(os.path.join(state_dir, "lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        stop_previous(me)
+        with open(pidfile, "w") as f:
+            f.write(f"{os.getpid()} {me}")
     try:
         os.unlink(fifo)
     except FileNotFoundError:
@@ -269,17 +296,6 @@ def main():
 
     threading.Thread(target=source_ended, daemon=True).start()
 
-    def quit(signum, _):
-        try:
-            by = open(taken).read()
-            if signum == signal.SIGTERM and by != me:
-                say(f"error taken over by {by}")
-        except OSError:
-            pass
-        finish(0)
-
-    signal.signal(signal.SIGTERM, quit)
-    signal.signal(signal.SIGHUP, quit)
     threading.Thread(target=watch, args=(source,), daemon=True).start()
     say(f"hello {VERSION}")
     pump()  # until SSH closes stdin
