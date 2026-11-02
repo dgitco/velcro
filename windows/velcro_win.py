@@ -175,10 +175,7 @@ def dest_ready(dest):
 
 def import_volume(root, s, device=None, uuid="", log=print):
     """Import every recording on the recorder at root. Returns (imported, failed)."""
-    dest = get(s, "import.dest")
-    if not dest:
-        log("import.dest is not set")
-        return 0, 0
+    dest = get(s, "import.dest") or os.path.join(os.path.expanduser("~"), "Recordings")  # local folder unless set
     device = device or os.path.basename(root.rstrip("/\\")) or root
     files = find_files(root, s)
     if dest_ready(dest):
