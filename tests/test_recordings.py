@@ -232,6 +232,97 @@ class Failures(Base):
             self.fail('the engine\'s child kept running')
 
 
+class Done(Base):
+    """recordings.done: once per import, after every recording that import brought in is done."""
+
+    def done_hook(self, body=''):
+        """A done command that logs the import id per call and keeps what else it got in seen/<id>.*."""
+        self.calls, seen = self.tmp / 'done.calls', self.tmp / 'seen'
+        seen.mkdir(exist_ok=True)
+        return script(self.bin / 'done', body + f'echo "$VELCRO_IMPORT" >> {self.calls}\n'
+                      f'printf "%s" "$VELCRO_RECORDINGS" > {seen}/"$VELCRO_IMPORT".recordings\n'
+                      f'printf "%s" "$VELCRO_TRANSCRIPTS" > {seen}/"$VELCRO_IMPORT".transcripts\n'
+                      f'printf "%s" "$VELCRO_TRANSCRIPTS_JSON" > {seen}/"$VELCRO_IMPORT".json\n'
+                      f'printf "%s" "$VELCRO_RECORDS" > {seen}/"$VELCRO_IMPORT".records\n')
+
+    def calls_made(self):
+        return self.calls.read_text().splitlines() if self.calls.exists() else []
+
+    def seen(self, imp, what):
+        return (self.tmp / 'seen' / f'{imp}.{what}').read_text()
+
+    def after_retry(self, key):
+        """time.time() just past the retry time of key's failure."""
+        return mock.patch.object(vr.time, 'time', return_value=self.state_doc()['failures'][key]['next'] + 1)
+
+    def test_runs_once_when_every_recording_of_the_import_is_done(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        self.add('b.WAV', **{'import': 'imp-1'})
+        self.add('c.WAV', **{'import': 'imp-2'})
+        flag = self.tmp / 'b-ok'
+        self.engine = script(self.bin / 'engine-b', f'case "$1" in *b.WAV) [ -e {flag} ] || exit 1;; esac; echo "heard $1"\n')
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        # b failed to transcribe: imp-1 is not done, imp-2 is.
+        self.assertTrue((self.out / 'a.json').exists())
+        self.assertEqual(self.calls_made(), ['imp-2'])
+        flag.touch()
+        with self.after_retry('b.WAV'):
+            self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-2', 'imp-1'])
+        self.assertEqual(self.seen('imp-1', 'recordings').split('\n'), [str(self.dir / 'a.WAV'), str(self.dir / 'b.WAV')])
+        self.assertEqual(self.seen('imp-1', 'transcripts').split('\n'), [str(self.out / 'a.txt'), str(self.out / 'b.txt')])
+        self.assertEqual(self.seen('imp-1', 'json').split('\n'), [str(self.out / 'a.json'), str(self.out / 'b.json')])
+        self.assertEqual([r['file'] for r in json.loads(self.seen('imp-1', 'records'))], ['a.WAV', 'b.WAV'])
+        self.assertEqual(set(self.state_doc()['imports']), {'imp-1', 'imp-2'})
+        # Later runs call it for neither import again.
+        self.run_helper('--done', done)
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-2', 'imp-1'])
+
+    def test_waits_for_tidy_and_deliver_of_every_recording(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        self.add('b.WAV', **{'import': 'imp-1'})
+        done = self.done_hook()
+        tidy = script(self.bin / 'tidy', 'echo tidy\n')
+        deliver = script(self.bin / 'deliver', 'case "$VELCRO_RECORDING" in *b.WAV) exit 1;; esac; echo ok\n')
+        self.run_helper('--tidy', tidy, '--deliver', deliver, '--done', done)
+        self.assertEqual(self.calls_made(), [])
+        deliver = script(self.bin / 'deliver', 'echo ok\n')
+        with self.after_retry('b.WAV'):
+            self.run_helper('--tidy', tidy, '--deliver', deliver, '--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1'])
+
+    def test_failure_is_retried_later_and_not_before(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        flag = self.tmp / 'ok'
+        done = self.done_hook(f'[ -e {flag} ] || {{ echo not yet >&2; exit 1; }}\n')
+        self.run_helper('--done', done)
+        f = self.state_doc()['failures']['import imp-1']
+        self.assertEqual((f['step'], f['count']), ('done', 1))
+        self.assertIn('not yet', f['error'])
+        flag.touch()
+        self.run_helper('--done', done)  # its retry time hasn't come
+        self.assertEqual(self.calls_made(), [])
+        _, out = self.run_helper('--done', done, command='status')
+        self.assertIn('done (try 2 after', out)
+        with self.after_retry('import imp-1'):
+            self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1'])
+        doc = self.state_doc()
+        self.assertNotIn('import imp-1', doc.get('failures', {}))
+        self.assertIn('imp-1', doc['imports'])
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1'])
+
+    def test_lines_without_an_import_id_never_run_it(self):
+        self.add('old.WAV')
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        self.assertTrue((self.out / 'old.json').exists())
+        self.assertEqual(self.calls_made(), [])
+
+
 class Command(Base):
     """velcro recordings hands the settings to the helper."""
 

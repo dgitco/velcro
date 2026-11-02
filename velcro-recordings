@@ -19,9 +19,15 @@ Each line of <dir>/.velcro-import.jsonl is one recording. For each one, in order
      kept in <out>/<name>.deliver.txt.
 
 The hooks get VELCRO_RECORDING (the audio), VELCRO_RECORD (its import line, JSON), VELCRO_TRANSCRIPT,
-VELCRO_TRANSCRIPT_JSON, VELCRO_OUT and, for deliver, VELCRO_TIDIED. A step that fails (exit status
+VELCRO_TRANSCRIPT_JSON, VELCRO_OUT and, for deliver, VELCRO_TIDIED.
+
+Once every recording of one import (the lines that share an "import" id: one `velcro import` run) has all
+its steps done, --done <command> runs once for that import, with VELCRO_IMPORT (the id), VELCRO_RECORDS (its
+lines, a JSON list), VELCRO_RECORDINGS, VELCRO_TRANSCRIPTS and VELCRO_TRANSCRIPTS_JSON (one path per line, in
+manifest order) and VELCRO_OUT. Its success is kept in the state, so it never runs twice for an import.
+Lines without an import id (written by an older velcro) never run it. A step that fails (exit status
 not 0, or a timeout) is tried again after 10, 20, 40 ... minutes (at most 6 hours); from the third
-failure on, --alert <command> runs with one line of text last, at most once a day per file and step.
+failure on, --alert <command> runs with one line of text last, at most once a day per file (or import) and step.
 Nothing is ever deleted or changed in <dir>. One run at a time per <out> (a lock in <state>).
 Exit status: 0 done (failures are counted in the state and retried later), 2 usage.
 """
@@ -47,6 +53,7 @@ BACKOFF_S, BACKOFF_MAX_S = 600, 6 * 3600
 ALERT_FROM = 3
 HOOK_TIMEOUT_S = 1800
 STEPS = ('transcribe', 'tidy', 'deliver')
+DONE_KEY = 'import {}'  # an import's key in the failure counts, next to the file names
 TRANSCRIBE = ('claude', 'codex')  # engines velcro transcribe runs
 
 
@@ -356,9 +363,42 @@ class Run:
             os.close(out)
         return f'{step} ok'
 
+    def imports(self, recs):
+        """The imports to run the done hook for: {id: its lines}, for each id not done yet whose every line is."""
+        groups = {}
+        for rec in recs:
+            if isinstance(rec.get('import'), str) and rec['import']:
+                groups.setdefault(rec['import'], []).append(rec)
+        finished = self.state.get('imports', {})
+        return {i: g for i, g in groups.items()
+                if i not in finished and all(self.next_step(r)[1] == 'done' for r in g)}
+
+    def waiting(self, imp):
+        """When the done hook of this import failed and its next try is still ahead: a line saying so, else None."""
+        f = self.state.get('failures', {}).get(DONE_KEY.format(imp))
+        if f and f.get('next', 0) > time.time():
+            return f'done (try {f["count"] + 1} after {time.strftime("%m-%d %H:%M", time.localtime(f["next"]))})'
+        return None
+
+    def done(self, imp, recs):
+        ps = [self.paths(r) for r in recs]
+        env = dict(os.environ, VELCRO_IMPORT=imp, VELCRO_RECORDS=json.dumps(recs, ensure_ascii=False),
+                   VELCRO_RECORDINGS='\n'.join(str(p['audio']) for p in ps),
+                   VELCRO_TRANSCRIPTS='\n'.join(str(p['txt']) for p in ps),
+                   VELCRO_TRANSCRIPTS_JSON='\n'.join(str(p['json']) for p in ps), VELCRO_OUT=str(self.out))
+        argv, _ = command(self.a.done)
+        try:
+            r = run_limited(argv, HOOK_TIMEOUT_S, env)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f'done took over {HOOK_TIMEOUT_S // 60} min, stopped')
+        if r.returncode:
+            raise RuntimeError(f'done failed (exit {r.returncode}): {(r.stderr or r.stdout).strip()[-300:]}')
+        return f'done ok ({len(recs)} recording{"" if len(recs) == 1 else "s"})'
+
     # ---- failures ----
 
     def failed(self, rec, step, err):
+        """Count a failure of rec's step; rec is an import line, or {'file': DONE_KEY} for an import's done hook."""
         f = self.state.setdefault('failures', {}).get(rec['file'])
         if not f or f.get('step') != step:
             f = {'count': 0}
@@ -394,6 +434,9 @@ class Run:
         for rec in recs:
             _, what = self.next_step(rec)
             print(f"{rec['file']:28} {what}")
+        if self.a.done:
+            for imp in self.imports(recs):
+                print(f"{DONE_KEY.format(imp):28} {self.waiting(imp) or 'done hook'}")
         return 0
 
     def run(self):
@@ -428,6 +471,23 @@ class Run:
                 self.state.setdefault('done', {}).setdefault(rec['file'], {})[step] = now_iso()
                 self.save()
                 say(f"{rec['file']}: {msg}")
+        if self.a.done:
+            for imp, recs in self.imports(self.records()).items():
+                if self.waiting(imp):
+                    continue
+                if time.time() - started > self.a.budget:
+                    say('run budget used, the rest waits for the next run')
+                    return 0
+                worked, key = True, DONE_KEY.format(imp)
+                try:
+                    msg = self.done(imp, recs)
+                except Exception as e:
+                    self.failed({'file': key}, 'done', e)
+                    continue
+                self.state.get('failures', {}).pop(key, None)
+                self.state.setdefault('imports', {})[imp] = now_iso()
+                self.save()
+                say(f'{key}: {msg}')
         if not worked:
             say('nothing new')
         return 0
@@ -448,6 +508,7 @@ def main(argv=None):
     p.add_argument('--lang', default='', help='language for --engine claude or codex, e.g. ko')
     p.add_argument('--tidy', default='', help='command run after transcribing')
     p.add_argument('--deliver', default='', help='command run after tidying')
+    p.add_argument('--done', default='', help='command run once per import, when all its recordings are done')
     p.add_argument('--alert', default='', help='command run with a line of text from the third failure on')
     p.add_argument('--since', default='', help='only recordings imported at or after this time (2026-10-21T00:00)')
     p.add_argument('--timeout', type=lambda v: float(v) if v else 0, default=0,
