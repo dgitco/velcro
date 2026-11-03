@@ -116,7 +116,12 @@ def main():
             sh.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid))
             tip("velcro")
             if path:
-                threading.Thread(target=lambda: say(f"hotkey recording: {v.import_files([path], s, say)}"), daemon=True).start()
+                def upload():
+                    ok, bad = v.import_files([path], s, say)
+                    say(f"hotkey recording uploaded: {ok}" if ok and not bad else f"hotkey recording upload failed (file kept at {path})")
+                threading.Thread(target=upload, daemon=True).start()
+            else:
+                balloon("Recording was too short or could not be saved")
 
     def balloon(text):
         nid.uFlags = NIF_INFO
@@ -125,7 +130,7 @@ def main():
 
     def say(msg):
         log(msg)
-        if msg.startswith("import: deleted") or "could not" in msg:
+        if msg.startswith("import: deleted") or "could not" in msg or "failed" in msg:
             balloon(msg)
 
     def proc(hwnd, msg, wp, lp):
@@ -152,6 +157,8 @@ def main():
             elif c == ID_SETTINGS:
                 p = v.settings_path(); os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "a").close(); os.startfile(p)
             elif c == ID_QUIT:
+                if rec.active:
+                    toggle(hwnd)  # save and upload what was recorded before exiting
                 u.DestroyWindow(hwnd)
         elif msg == WM_DESTROY:
             sh.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid)); u.PostQuitMessage(0)

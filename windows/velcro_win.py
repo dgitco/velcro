@@ -8,10 +8,11 @@ Python standard library only. Everything below `Windows layer` is portable so it
   python velcro_win.py run                        watch for recorders being plugged in
   python velcro_win.py set KEY VALUE | settings | recorder add ROOT
 """
-import hashlib, json, os, shutil, sys, time, wave, datetime
+import hashlib, json, os, shutil, sys, threading, time, wave, datetime
 
 SEP = "\t"
 MANIFEST = ".velcro-import.jsonl"
+IMPORT_LOCK = threading.Lock()  # one import at a time: hotkey upload, "Import now" and the watcher share the manifest
 DEFAULTS = {"import.ext": "wav mp3 m4a aac flac wma ogg", "import.delete": "yes", "import.auto": "yes", "record.hotkey": "ctrl+alt+r"}
 
 
@@ -173,7 +174,7 @@ def dest_ready(dest):
     return bool(dest) and os.path.isdir(dest)
 
 
-def import_volume(root, s, device=None, uuid="", log=print):
+def _import_volume(root, s, device=None, uuid="", log=print):
     """Import every recording on the recorder at root. Returns (imported, failed)."""
     dest = get(s, "import.dest") or os.path.join(os.path.expanduser("~"), "Recordings")  # local folder unless set
     device = device or os.path.basename(root.rstrip("/\\")) or root
@@ -219,7 +220,7 @@ def import_volume(root, s, device=None, uuid="", log=print):
     return len(ok), 0
 
 
-def import_files(files, s, log=print):
+def _import_files(files, s, log=print):
     """Upload chosen files (a hotkey recording, say) the way a recorder import does, but never delete the source."""
     s = dict(s)
     s["import.delete"] = ["no"]
@@ -268,7 +269,7 @@ def parse_hotkey(text):
     return (mods, key) if mods and key else None
 
 
-def flush_queue(s, log=print):
+def _flush_queue(s, log=print):
     """Move recordings waiting on this PC to import.dest once it is reachable; each verified before removal."""
     dest, q = get(s, "import.dest"), queue_dir()
     if not dest_ready(dest) or not os.path.isdir(q):
@@ -377,6 +378,21 @@ def main(argv):
     else:
         print(__doc__)
     return 0
+
+
+def import_volume(*a, **k):
+    with IMPORT_LOCK:
+        return _import_volume(*a, **k)
+
+
+def import_files(*a, **k):
+    with IMPORT_LOCK:
+        return _import_files(*a, **k)
+
+
+def flush_queue(*a, **k):
+    with IMPORT_LOCK:
+        return _flush_queue(*a, **k)
 
 
 if __name__ == "__main__":
