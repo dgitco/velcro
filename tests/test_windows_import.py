@@ -68,6 +68,21 @@ class T(unittest.TestCase):
             v.put_verified = orig
         self.assertTrue(os.path.exists(os.path.join(self.rec, "RECORD", "a.WAV")))
 
+    def test_hotkey_parse(self):
+        self.assertEqual(v.parse_hotkey("ctrl+alt+r"), (0x3, ord("R")))
+        self.assertEqual(v.parse_hotkey("Shift+Win+F9"), (0xC, 0x6F + 9))
+        for bad in ("r", "ctrl+alt", "ctrl+r+t", "f13", "alt+ä", "ctrl+"):
+            self.assertIsNone(v.parse_hotkey(bad), bad)
+
+    def test_import_files_keeps_source_and_lists_it(self):
+        src = os.path.join(self.t, "20261103120000.wav")
+        wav(src, 2)
+        self.assertEqual(v.import_files([src], self.s, log=lambda *_: 0), (1, 0))
+        self.assertTrue(os.path.exists(src))  # a hotkey recording is never deleted by the upload
+        e = json.loads(open(os.path.join(self.dest, v.MANIFEST)).read())
+        self.assertEqual((list(e), e["device"], e["duration_s"]), (MAC_KEYS, "Manual upload", 2.0))
+        self.assertEqual(e["sha256"], v.sha256_file(os.path.join(self.dest, "20261103120000.wav")))
+
 
 if __name__ == "__main__":
     unittest.main()

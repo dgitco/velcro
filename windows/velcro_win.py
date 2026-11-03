@@ -12,7 +12,7 @@ import hashlib, json, os, shutil, sys, time, wave, datetime
 
 SEP = "\t"
 MANIFEST = ".velcro-import.jsonl"
-DEFAULTS = {"import.ext": "wav mp3 m4a aac flac wma ogg", "import.delete": "yes", "import.auto": "yes"}
+DEFAULTS = {"import.ext": "wav mp3 m4a aac flac wma ogg", "import.delete": "yes", "import.auto": "yes", "record.hotkey": "ctrl+alt+r"}
 
 
 def config_dir():
@@ -219,6 +219,55 @@ def import_volume(root, s, device=None, uuid="", log=print):
     return len(ok), 0
 
 
+def import_files(files, s, log=print):
+    """Upload chosen files (a hotkey recording, say) the way a recorder import does, but never delete the source."""
+    s = dict(s)
+    s["import.delete"] = ["no"]
+    ok = failed = 0
+    dest = get(s, "import.dest") or os.path.join(os.path.expanduser("~"), "Recordings")
+    for f in files:
+        d, queued = (dest, False)
+        if not dest_ready(dest):
+            if os.path.isdir(os.path.dirname(dest.rstrip("/\\"))):
+                os.makedirs(dest, exist_ok=True)
+            else:
+                d, queued = queue_dir(), True
+                os.makedirs(os.path.join(d, ".meta"), exist_ok=True)
+        r = put_verified(f, d)
+        if not r:
+            failed += 1
+            continue
+        name, sha, _ = r
+        secs = duration_s(f)
+        at = now_iso()
+        if queued:
+            with open(os.path.join(d, ".meta", name), "w", encoding="utf-8") as m:
+                m.write(SEP.join([os.path.basename(f), str(os.path.getsize(f)), sha, at, "Manual upload", "", "" if secs is None else str(secs)]))
+        else:
+            manifest_add(d, name, os.path.basename(f), os.path.getsize(f), sha, at, "Manual upload", "", secs)
+        ok += 1
+        log(f"import: {f} -> {d}")
+    return ok, failed
+
+
+MODS = {"ctrl": 0x2, "control": 0x2, "alt": 0x1, "opt": 0x1, "option": 0x1, "shift": 0x4, "win": 0x8, "cmd": 0x8, "command": 0x8}
+
+
+def parse_hotkey(text):
+    """"ctrl+alt+r" -> (modifier mask, virtual key code) for RegisterHotKey, or None. Same words as the Mac."""
+    mods, key = 0, None
+    for w in (x.strip() for x in text.lower().split("+")):
+        if w in MODS:
+            mods |= MODS[w]
+        elif key is None and len(w) == 1 and w.isascii() and w.isalnum():
+            key = ord(w.upper())
+        elif key is None and w.startswith("f") and w[1:].isdigit() and 1 <= int(w[1:]) <= 12:
+            key = 0x6F + int(w[1:])
+        else:
+            return None
+    return (mods, key) if mods and key else None
+
+
 def flush_queue(s, log=print):
     """Move recordings waiting on this PC to import.dest once it is reachable; each verified before removal."""
     dest, q = get(s, "import.dest"), queue_dir()
@@ -307,6 +356,9 @@ def main(argv):
     elif cmd == "run":
         run_loop()
     elif cmd == "set" and len(argv) >= 3:
+        if argv[1] == "record.hotkey" and not parse_hotkey(" ".join(argv[2:])):
+            print("record.hotkey is modifiers plus one key, like ctrl+alt+r")
+            return 2
         s[argv[1]] = [" ".join(argv[2:])]
         write_settings(s)
     elif cmd == "recorder" and argv[1:2] == ["add"] and len(argv) == 3:
