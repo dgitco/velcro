@@ -59,9 +59,17 @@ class Recording:
         d = os.path.join(v.state_dir(), "hotkey")
         os.makedirs(d, exist_ok=True)
         self.path = os.path.join(d, v.datetime.datetime.now().strftime("%Y%m%d%H%M%S") + ".wav")
-        err, _ = self._mci("open new type waveaudio alias velcrorec")
-        if err or self._mci("record velcrorec")[0]:
+        # The default format (11 kHz, 8-bit) is refused by many devices (error 322), so try common 16-bit mono rates.
+        started = False
+        for rate in (16000, 44100, 48000, 22050, 11025):
+            if self._mci("open new type waveaudio alias velcrorec")[0]:
+                break
+            if not any(self._mci(c)[0] for c in ("set velcrorec bitspersample 16", "set velcrorec channels 1", f"set velcrorec samplespersec {rate}")) \
+                    and not self._mci("record velcrorec")[0]:
+                started = True
+                break
             self._mci("close velcrorec")
+        if not started:
             self.path = None
             return False
         self.since = __import__("time").time()
