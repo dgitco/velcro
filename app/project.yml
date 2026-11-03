@@ -56,7 +56,7 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: velcro
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
         INFOPLIST_KEY_NSHumanReadableCopyright: MIT License
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Mac Mic sends your microphone to the machine you chose, only while something there is recording."
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "velcro records with your microphone when you press the recording shortcut, and Mac Mic sends it to the machine you chose, only while something there is recording."
     # The hardened runtime needs this to open the microphone at all (Mac Mic).
     entitlements:
       path: velcro.entitlements
