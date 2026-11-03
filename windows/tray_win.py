@@ -90,8 +90,10 @@ def main():
         s = v.read_settings()
         if not rec.active:
             if not rec.start():
+                log("hotkey: could not start recording (no microphone?)")
                 balloon("Couldn't start recording (microphone?)")
                 return
+            log("hotkey: recording started")
             u.SetTimer(hwnd, timer["id"], 1000, None)
             nid.hIcon = u.LoadIconW(None, ctypes.c_wchar_p(32513))  # IDI_ERROR (red) while recording
             nid.uFlags = NIF_ICON
@@ -100,6 +102,7 @@ def main():
         else:
             u.KillTimer(hwnd, timer["id"])
             path = rec.stop()
+            log(f"hotkey: recording stopped -> {path}")
             nid.hIcon = u.LoadIconW(None, ctypes.c_wchar_p(32516))
             nid.uFlags = NIF_ICON
             sh.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid))
