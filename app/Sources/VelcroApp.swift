@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Engine.shared.start()
         Clipboard.shared.start()
         Mic.shared.start()
-        Recorder.shared.start()
+        HotkeyRecorder.shared.start()
         ClipSender.shared.start()
         Task {
             await Store.shared.loadEnv()
@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 struct MenuBarLabel: View {
     @ObservedObject private var store = Store.shared
     @ObservedObject private var importer = Importer.shared
-    @ObservedObject private var recorder = Recorder.shared
+    @ObservedObject private var recorder = HotkeyRecorder.shared
 
     var body: some View {
         HStack(spacing: 4) {
@@ -129,7 +129,7 @@ struct MenuContent: View {
 /// Both automatic recorder imports and manual uploads use the recording import folder.
 struct ImportMenu: View {
     @ObservedObject private var importer = Importer.shared
-    @ObservedObject private var recorder = Recorder.shared
+    @ObservedObject private var recorder = HotkeyRecorder.shared
     @ObservedObject private var store = Store.shared
 
     var body: some View {

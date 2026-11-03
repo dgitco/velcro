@@ -39,8 +39,9 @@ struct HotKeySpec: Equatable {
 
 /// A global shortcut starts a recording; pressing it again stops it and uploads the file the way
 /// `velcro import --files` does, so the server sees it like any recorder import.
-final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
-    static let shared = Recorder()
+@MainActor
+final class HotkeyRecorder: ObservableObject {
+    static let shared = HotkeyRecorder()
 
     @Published private(set) var recording = false
     @Published private(set) var elapsed = 0
@@ -52,6 +53,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private var recorder: AVAudioRecorder?
     private var ticker: Timer?
     private var current = ""
+    private var registered = "\u{0}"
     private var subscription: AnyCancellable?
     private let store = Store.shared
 
@@ -63,6 +65,11 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     func start() {
         prune()
         installHandler()
+        // `notifyutil -p io.github.dgitco.velcro.record` does what the shortcut does: for a terminal,
+        // a Shortcuts action, or a check on a Mac where nobody is at the keyboard.
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), nil, { _, _, _, _, _ in
+            Task { @MainActor in HotkeyRecorder.shared.toggle() }
+        }, "io.github.dgitco.velcro.record" as CFString, nil, .deliverImmediately)
         subscription = store.$settings.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.register() }
     }
 
@@ -73,14 +80,16 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private func installHandler() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            Task { @MainActor in Recorder.shared.toggle() }
+            Task { @MainActor in HotkeyRecorder.shared.toggle() }
             return noErr
         }, 1, &spec, nil, &handler)
     }
 
     private func register() {
-        if let ref = hotKeyRef { UnregisterEventHotKey(ref); hotKeyRef = nil }
         let text = hotkeyText
+        guard text != registered else { return }
+        registered = text
+        if let ref = hotKeyRef { UnregisterEventHotKey(ref); hotKeyRef = nil }
         guard !text.isEmpty else { hotkeyError = ""; return }
         guard let spec = HotKeySpec.parse(text) else {
             hotkeyError = "Use modifiers plus one key, like ctrl+alt+r"
@@ -89,6 +98,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         let id = EventHotKeyID(signature: OSType(0x56454C43), id: 1)  // 'VELC'
         let status = RegisterEventHotKey(spec.keyCode, spec.modifiers, id, GetApplicationEventTarget(), 0, &hotKeyRef)
         hotkeyError = status == noErr ? "" : "Another app already uses \(text)"
+        NSLog("velcro hotkey \(text): \(status == noErr ? "registered" : "failed \(status)")")
     }
 
     // MARK: Recording
@@ -106,7 +116,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { ok in
                 Task { @MainActor in
-                    if ok { Recorder.shared.record() } else { Notifier.post("velcro can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone.") }
+                    if ok { HotkeyRecorder.shared.record() } else { Notifier.post("velcro can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone.") }
                 }
             }
         default:
@@ -128,13 +138,12 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             Notifier.post("Couldn't start recording")
             return
         }
-        r.delegate = self
         recorder = r
         current = url.path
         elapsed = 0
         recording = true
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            Task { @MainActor in Recorder.shared.elapsed += 1 }
+            Task { @MainActor in HotkeyRecorder.shared.elapsed += 1 }
         }
     }
 
@@ -156,7 +165,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// An import already running (a recorder just plugged in) finishes first; the file stays put meanwhile.
     private func upload(_ path: String, tries: Int) {
         if Importer.shared.running, tries < 120 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Recorder.shared.upload(path, tries: tries + 1) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { HotkeyRecorder.shared.upload(path, tries: tries + 1) }
             return
         }
         Importer.shared.run(files: [path])

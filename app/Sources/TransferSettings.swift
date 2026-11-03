@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Import
 
 struct ImportPane: View {
-    @ObservedObject private var recorder = Recorder.shared
+    @ObservedObject private var recorder = HotkeyRecorder.shared
     @ObservedObject private var store = Store.shared
     @ObservedObject private var importer = Importer.shared
 
