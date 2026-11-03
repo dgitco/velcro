@@ -53,6 +53,7 @@ final class HotkeyRecorder: ObservableObject {
     private var recorder: AVAudioRecorder?
     private var ticker: Timer?
     private var current = ""
+    private var pruned = false
     private var registered = "\u{0}"
     private var subscription: AnyCancellable?
     private let store = Store.shared
@@ -63,14 +64,13 @@ final class HotkeyRecorder: ObservableObject {
     }
 
     func start() {
-        prune()
         installHandler()
         // `notifyutil -p io.github.dgitco.velcro.record` does what the shortcut does: for a terminal,
         // a Shortcuts action, or a check on a Mac where nobody is at the keyboard.
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), nil, { _, _, _, _, _ in
             Task { @MainActor in HotkeyRecorder.shared.toggle() }
         }, "io.github.dgitco.velcro.record" as CFString, nil, .deliverImmediately)
-        subscription = store.$settings.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.register() }
+        subscription = store.$settings.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.register(); self?.pruneOnce() }
     }
 
     var hotkeyText: String { store.setting("record.hotkey") }
@@ -173,13 +173,22 @@ final class HotkeyRecorder: ObservableObject {
 
     var elapsedText: String { String(format: "%d:%02d", elapsed / 60, elapsed % 60) }
 
-    /// Local copies only wait for the upload; a week later they are gone.
+    /// Local copies only wait for the upload. A week later they go, but only the ones the import
+    /// folder's list already shows; anything that never made it up is kept.
+    private func pruneOnce() {
+        guard !pruned, !store.setting("import.dest").isEmpty else { return }
+        pruned = true
+        prune()
+    }
+
     private func prune() {
         let old = Date().addingTimeInterval(-7 * 86400)
+        let dest = (store.setting("import.dest") as NSString).expandingTildeInPath
+        let listed = (try? String(contentsOfFile: dest + "/.velcro-import.jsonl", encoding: .utf8)) ?? ""
         for url in (try? FileManager.default.contentsOfDirectory(at: Self.folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
-            if let d = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, d < old {
-                try? FileManager.default.removeItem(at: url)
-            }
+            guard let d = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, d < old,
+                  listed.contains("\"original\":\"\(url.lastPathComponent)\"") else { continue }
+            try? FileManager.default.removeItem(at: url)
         }
     }
 }
