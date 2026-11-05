@@ -170,13 +170,17 @@ def queue_dir():
     return os.path.join(state_dir(), "queue")
 
 
+def dest_dir(s):
+    return get(s, "import.dest") or os.path.join(os.path.expanduser("~"), "Recordings")  # local folder unless set
+
+
 def dest_ready(dest):
     return bool(dest) and os.path.isdir(dest)
 
 
 def _import_volume(root, s, device=None, uuid="", log=print):
     """Import every recording on the recorder at root. Returns (imported, failed)."""
-    dest = get(s, "import.dest") or os.path.join(os.path.expanduser("~"), "Recordings")  # local folder unless set
+    dest = dest_dir(s)
     device = device or os.path.basename(root.rstrip("/\\")) or root
     files = find_files(root, s)
     if dest_ready(dest):
@@ -225,7 +229,7 @@ def _import_files(files, s, log=print):
     s = dict(s)
     s["import.delete"] = ["no"]
     ok = failed = 0
-    dest = get(s, "import.dest") or os.path.join(os.path.expanduser("~"), "Recordings")
+    dest = dest_dir(s)
     for f in files:
         d, queued = (dest, False)
         if not dest_ready(dest):
@@ -271,7 +275,7 @@ def parse_hotkey(text):
 
 def _flush_queue(s, log=print):
     """Move recordings waiting on this PC to import.dest once it is reachable; each verified before removal."""
-    dest, q = get(s, "import.dest"), queue_dir()
+    dest, q = dest_dir(s), queue_dir()
     if not dest_ready(dest) or not os.path.isdir(q):
         return 0
     moved = 0
@@ -296,18 +300,22 @@ def _flush_queue(s, log=print):
 
 
 # ---- Windows layer: drive discovery (ctypes). Not exercised by the Linux tests. ----
-def removable_drives():
-    """[(root, label, volume serial hex)] for removable drives that are ready."""
+def removable_drives(fixed=True):
+    """[(root, label, volume serial hex)] for ready drives a recorder can show up as: removable, and (fixed=True)
+    non-system fixed disks too, since some recorders present themselves as a fixed disk. Only drives registered with
+    `recorder add` are ever imported, so listing extra drives here is harmless."""
     import ctypes
     from ctypes import wintypes
     k = ctypes.windll.kernel32
+    system = os.environ.get("SystemDrive", "C:").upper().rstrip("\\") + "\\"
     out = []
     mask = k.GetLogicalDrives()
     for i in range(26):
         if not mask & (1 << i):
             continue
         root = f"{chr(65 + i)}:\\"
-        if k.GetDriveTypeW(root) != 2:  # DRIVE_REMOVABLE
+        t = k.GetDriveTypeW(root)
+        if not (t == 2 or (fixed and t == 3 and root.upper() != system)):  # DRIVE_REMOVABLE / DRIVE_FIXED
             continue
         label = ctypes.create_unicode_buffer(261)
         serial = wintypes.DWORD()
@@ -326,20 +334,35 @@ def is_recorder(s, label, serial):
     return False
 
 
-def run_loop(log=print, every=3):
-    seen = set()
+def add_recorder(s, label, serial):
+    s.setdefault("recorder", []).append(f"uuid:{serial} {label}")
+    write_settings(s)
+
+
+def run_loop(log=print, every=3, on_new=None):
+    """Watch drives; import registered recorders when they appear. on_new(root, label, serial, n) is called once per
+    plugging-in of an unregistered removable drive that holds recordings, so the tray can offer to register it."""
+    seen, offered = set(), set()
     while True:
         s = read_settings()
         try:
             flush_queue(s, log)
             now = set()
+            removable = {r for r, _, _ in removable_drives(fixed=False)} if on_new else set()
             for root, label, serial in removable_drives():
                 if not is_recorder(s, label, serial):
+                    if root in removable and (root + serial) not in offered:
+                        offered.add(root + serial)
+                        n = len(find_files(root, s))
+                        if n:
+                            on_new(root, label, serial, n)
                     continue
                 now.add(root + serial)
                 if (root + serial) not in seen and is_on(s, "import.auto"):
                     import_volume(root, s, label, serial, log)
             seen = now
+            if on_new:
+                offered &= {r + sn for r, _, sn in removable_drives()}  # offer again after it is unplugged and back
         except Exception as e:  # keep watching whatever happens
             log(f"run: {e!r}")
         time.sleep(every)
@@ -365,11 +388,10 @@ def main(argv):
     elif cmd == "recorder" and argv[1:2] == ["add"] and len(argv) == 3:
         for r, label, serial in removable_drives():
             if r.rstrip("\\").upper() == argv[2].rstrip("\\").upper():
-                s.setdefault("recorder", []).append(f"uuid:{serial} {label}")
-                write_settings(s)
+                add_recorder(s, label, serial)
                 print(f"added {label} ({serial})")
                 return 0
-        print("no removable drive at", argv[2])
+        print("no drive at", argv[2])
         return 1
     elif cmd == "settings":
         for k, v in s.items():

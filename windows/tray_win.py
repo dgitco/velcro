@@ -1,6 +1,6 @@
 """velcro tray icon for Windows (ctypes only): watches for recorders in the background and offers
 Import now / Open log / Quit from the notification-area icon. Untested outside Windows."""
-import ctypes, os, sys, threading
+import ctypes, os, subprocess, sys, threading
 from ctypes import wintypes
 import velcro_win as v
 
@@ -8,7 +8,7 @@ u, k, sh = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.shell32
 WM_USER, WM_TRAY, WM_COMMAND, WM_DESTROY, WM_RBUTTONUP = 0x400, 0x401, 0x111, 0x2, 0x205
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
 NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO = 1, 2, 4, 0x10
-ID_IMPORT, ID_LOG, ID_SETTINGS, ID_QUIT, ID_RECORD = 1, 2, 3, 4, 5
+ID_IMPORT, ID_LOG, ID_SETTINGS, ID_QUIT, ID_RECORD, ID_RELOAD, ID_ADD = 1, 2, 3, 4, 5, 6, 100  # ID_ADD+i: "Use drive i as recorder"
 WM_HOTKEY, HOTKEY_ID = 0x312, 1
 mm = ctypes.windll.winmm
 LRESULT = ctypes.c_ssize_t
@@ -84,7 +84,43 @@ class Recording:
         return path if not err and secs >= 1 and os.path.exists(path) else None
 
 
+def message(text):
+    u.MessageBoxW(None, text, "velcro", 0x40)  # MB_ICONINFORMATION
+
+
+def self_install():
+    """Double-clicking the downloaded velcro.exe installs it: copy to %LOCALAPPDATA%\\velcro\\app, start at sign-in,
+    start the installed copy. Re-running a newer download replaces the installed one. No admin needed."""
+    if not getattr(sys, "frozen", False):
+        return False
+    target = os.path.join(v.state_dir(), "app", "velcro.exe")
+    if os.path.normcase(os.path.abspath(sys.executable)) == os.path.normcase(os.path.abspath(target)):
+        return False
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    q = lambda x: "'" + x.replace("'", "''") + "'"
+    ps = (f"$t={q(target)}; Get-Process velcro -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -eq $t }} | Stop-Process -Force; "
+          f"for($i=0;$i -lt 30;$i++){{ try {{ Copy-Item -LiteralPath {q(sys.executable)} $t -Force -ErrorAction Stop; break }} catch {{ Start-Sleep 1 }} }}; "
+          "$l=Join-Path ([Environment]::GetFolderPath('Startup')) 'velcro.lnk'; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($l); "
+          "$s.TargetPath=$t; $s.Save(); Start-Process $t")
+    r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], creationflags=0x08000000)
+    log(f"install: {sys.executable} -> {target} rc={r.returncode}")
+    if r.returncode == 0 and os.path.exists(target):
+        hk = v.get(v.read_settings(), "record.hotkey")
+        message("velcro is installed and running (notification area, bottom right; it starts at sign-in too).\n\n"
+                f"Record: press {hk}, press it again to stop. The file is copied to {v.dest_dir(v.read_settings())}.\n"
+                "Recorder: plug it in, then right-click the velcro icon > Use <drive> as recorder.")
+    else:
+        message(f"velcro could not be installed (see {LOG}).")
+    return True
+
+
 def main():
+    if self_install():
+        return
+    k.CreateMutexW(None, False, "Local\\velcro-tray")
+    if k.GetLastError() == 183:  # ERROR_ALREADY_EXISTS: one tray icon per user
+        message("velcro is already running (notification area, bottom right).")
+        return
     nid = NOTIFYICONDATA()
     rec = Recording()
     timer = {"id": 1}
@@ -123,6 +159,20 @@ def main():
             else:
                 balloon("Recording was too short or could not be saved")
 
+    drives = []  # unregistered drives shown in the last menu, indexed by ID_ADD+i
+
+    def register_hotkey(hwnd, quiet=False):
+        u.UnregisterHotKey(hwnd, HOTKEY_ID)
+        text = v.get(v.read_settings(), "record.hotkey")
+        hk = v.parse_hotkey(text)
+        if not hk or not u.RegisterHotKey(hwnd, HOTKEY_ID, hk[0] | 0x4000, hk[1]):  # 0x4000: no auto-repeat
+            log(f"hotkey: {text} not available")
+            balloon(f"Shortcut {text} is not available (bad value or used by another app)")
+            return
+        log(f"hotkey: {text} registered")
+        if not quiet:
+            balloon(f"Shortcut is now {text}")
+
     def balloon(text):
         nid.uFlags = NIF_INFO
         nid.szInfo, nid.szInfoTitle = text[:255], "velcro"
@@ -141,7 +191,13 @@ def main():
             tip(f"velcro: recording {secs // 60}:{secs % 60:02d}")
         elif msg == WM_TRAY and lp == WM_RBUTTONUP:
             m = u.CreatePopupMenu()
-            for i, t in ((ID_RECORD, "Stop recording" if rec.active else "Start recording"), (ID_IMPORT, "Import now"), (ID_SETTINGS, "Open settings file"), (ID_LOG, "Open log"), (ID_QUIT, "Quit")):
+            hk = v.get(v.read_settings(), "record.hotkey")
+            items = [(ID_RECORD, f"Stop recording ({hk})" if rec.active else f"Start recording ({hk})"), (ID_IMPORT, "Import now")]
+            s = v.read_settings()
+            drives[:] = [d for d in v.removable_drives() if not v.is_recorder(s, d[1], d[2])]
+            items += [(ID_ADD + i, f"Use {r[:2]} {l or '(no name)'} as recorder") for i, (r, l, sn) in enumerate(drives)]
+            items += [(ID_SETTINGS, "Open settings file"), (ID_RELOAD, "Reload settings (shortcut)"), (ID_LOG, "Open log"), (ID_QUIT, "Quit")]
+            for i, t in items:
                 u.AppendMenuW(m, 0, i, t)
             pt = wintypes.POINT(); u.GetCursorPos(ctypes.byref(pt)); u.SetForegroundWindow(hwnd)
             u.TrackPopupMenu(m, 0, pt.x, pt.y, 0, hwnd, None)
@@ -152,6 +208,14 @@ def main():
             elif c == ID_IMPORT:
                 threading.Thread(target=lambda: [v.import_volume(r, v.read_settings(), l, sn, say) for r, l, sn in v.removable_drives()
                                                  if v.is_recorder(v.read_settings(), l, sn)], daemon=True).start()
+            elif ID_ADD <= c < ID_ADD + len(drives):
+                r, l, sn = drives[c - ID_ADD]
+                v.add_recorder(v.read_settings(), l, sn)
+                log(f"recorder added: {r} {l} ({sn})")
+                balloon(f"{r[:2]} {l} is now a recorder. Copying its recordings...")
+                threading.Thread(target=lambda: v.import_volume(r, v.read_settings(), l, sn, say), daemon=True).start()
+            elif c == ID_RELOAD:
+                register_hotkey(hwnd)
             elif c == ID_LOG:
                 os.startfile(LOG) if os.path.exists(LOG) else None
             elif c == ID_SETTINGS:
@@ -174,10 +238,12 @@ def main():
     nid.uFlags, nid.uCallbackMessage = NIF_MESSAGE | NIF_ICON | NIF_TIP, WM_TRAY
     nid.hIcon, nid.szTip = u.LoadIconW(None, ctypes.c_wchar_p(32516)), "velcro"  # IDI_INFORMATION
     sh.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid))
-    hk = v.parse_hotkey(v.get(v.read_settings(), "record.hotkey"))
-    if not hk or not u.RegisterHotKey(hwnd, HOTKEY_ID, hk[0] | 0x4000, hk[1]):  # 0x4000: no auto-repeat
-        balloon(f"Shortcut {v.get(v.read_settings(), 'record.hotkey')} is not available (bad value or used by another app)")
-    threading.Thread(target=v.run_loop, args=(say,), daemon=True).start()
+    register_hotkey(hwnd, quiet=True)
+
+    def on_new(root, label, serial, n):
+        log(f"unregistered drive {root} {label} ({serial}) has {n} recordings")
+        balloon(f"{root[:2]} {label} has {n} recordings. Right-click the velcro icon > Use {root[:2]} as recorder to back it up.")
+    threading.Thread(target=v.run_loop, args=(say,), kwargs={"on_new": on_new}, daemon=True).start()
     m = wintypes.MSG()
     while u.GetMessageW(ctypes.byref(m), None, 0, 0) > 0:
         u.TranslateMessage(ctypes.byref(m)); u.DispatchMessageW(ctypes.byref(m))
