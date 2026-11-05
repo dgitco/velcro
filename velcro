@@ -1181,7 +1181,14 @@ cmd_transcribe() {
 # On Linux there is no Library folder for its state, so it goes where XDG says.
 cmd_recordings() {
   local sub=${1:-status}; shift 2>/dev/null
-  [[ $sub == (run|status) && $# == 0 ]] || { print -u2 "usage: velcro recordings [status | run]"; return 2; }
+  [[ $sub == (run|status|check) ]] || { print -u2 "usage: velcro recordings [status | run | check [--require tidy|deliver|done] ...]"; return 2; }
+  local -a check_args
+  while (( $# )); do
+    [[ $sub == check && $1 == --require && ${2:-} == (tidy|deliver|done) ]] || {
+      print -u2 "usage: velcro recordings check [--require tidy|deliver|done] ..."; return 2;
+    }
+    check_args+=("$1" "$2"); shift 2
+  done
   [[ -r $RECORDINGS_HELPER ]] || { print -u2 "velcro-recordings is missing next to $SELF; install velcro again"; return 1; }
   local dir=$(folder_setting recordings.dir)
   [[ -n $dir ]] || dir=$(folder_setting import.dest)
@@ -1190,12 +1197,12 @@ cmd_recordings() {
   [[ -n $out ]] || out=$dir/_velcro
   [[ $OSTYPE == darwin* ]] && state=$SUPPORT || state=${XDG_STATE_HOME:-$HOME/.local/state}/velcro
   # No default engine: long recordings through someone's Claude login should be a choice, not a default.
-  [[ -n $(setting recordings.engine) ]] || { print -u2 "choose an engine first: velcro set recordings.engine \"<command that prints the text>\" (or claude or codex, which use your own login)"; return 1; }
+  [[ $sub == check || -n $(setting recordings.engine) ]] || { print -u2 "choose an engine first: velcro set recordings.engine \"<command that prints the text>\" (or claude or codex, which use your own login)"; return 1; }
   py=$(transcribe_python) || return 1
   "$py" "$RECORDINGS_HELPER" $sub --dir "$dir" --out "$out" --state "$state" --velcro "$SELF" \
     --engine "$(setting recordings.engine)" --lang "$(setting transcribe.lang)" --since "$(setting recordings.since)" --timeout "$(setting recordings.timeout)" \
     --tidy "$(setting recordings.tidy)" --deliver "$(setting recordings.deliver)" --done "$(setting recordings.done)" \
-    --alert "$(setting recordings.alert)"
+    --alert "$(setting recordings.alert)" --ext "$(setting import.ext)" "${check_args[@]}"
 }
 
 cmd_help() {
@@ -1228,6 +1235,8 @@ velcro $VERSION — keep network shares stuck to your Mac
                              and audio, never shared
   velcro recordings [run]    what is waiting in recordings.dir; run transcribes, tidies and
                              delivers it (engine and hook commands below), retrying failures
+  velcro recordings check [--require tidy|deliver|done] ...
+                             read-only JSON reconciliation; exit 1 for gaps or missing hooks
   velcro settings            show settings;  velcro set [--add] <key> [value ...] to change one
 
 settings ($SETTINGS):

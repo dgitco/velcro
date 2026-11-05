@@ -322,6 +322,110 @@ class Done(Base):
         self.assertTrue((self.out / 'old.json').exists())
         self.assertEqual(self.calls_made(), [])
 
+    def test_late_queued_member_runs_done_again_for_the_changed_group(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        revisions = self.tmp / 'revisions'
+        done = self.done_hook(f'echo "$VELCRO_IMPORT_REVISION" >> {revisions}\n')
+        self.run_helper('--done', done)
+        self.add('b.WAV', **{'import': 'imp-1'})  # a later queue flush, same original import
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1', 'imp-1'])
+        self.assertEqual([r['file'] for r in json.loads(self.seen('imp-1', 'records'))], ['a.WAV', 'b.WAV'])
+        self.assertEqual(len(set(revisions.read_text().splitlines())), 2)
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1', 'imp-1'])
+
+    def test_legacy_timestamp_completion_is_reconciled_once(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        state = self.state_doc()
+        state['imports']['imp-1'] = '2026-11-02T10:00:00+09:00'
+        next(self.state.glob('recordings-*.json')).write_text(json.dumps(state))
+        self.run_helper('--done', done)
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1', 'imp-1'])
+
+
+class Check(Base):
+    def check(self, *args):
+        rc, out = self.run_helper(*args, command='check')
+        return rc, json.loads(out)
+
+    def test_missing_manifest_or_unregistered_audio_is_not_healthy(self):
+        (self.dir / 'orphan.WAV').write_bytes(b'audio')
+        rc, report = self.check()
+        self.assertEqual(rc, 1)
+        self.assertFalse(report['ok'])
+        self.assertEqual(report['counts']['unregistered'], 1)
+        self.assertIn({'stage': 'manifest missing'}, report['issues'])
+        self.assertFalse(self.out.exists())
+        self.assertFalse(self.state.exists())
+
+    def test_malformed_manifest_is_reported_even_with_completed_recordings(self):
+        self.add('a.WAV')
+        self.run_helper()
+        with (self.dir / '.velcro-import.jsonl').open('a') as f:
+            f.write('{broken\n[]\n')
+        rc, report = self.check()
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['counts']['complete'], 1)
+        self.assertEqual(len(report['issues']), 2)
+
+    def test_counts_alone_do_not_hide_missing_or_failed_handoffs(self):
+        self.add('a.WAV')
+        self.add('b.WAV')
+        deliver = script(self.bin / 'deliver', 'exit 1\n')
+        self.run_helper('--deliver', deliver)
+        rc, report = self.check('--deliver', deliver)
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['counts']['pending'], 2)
+        self.assertTrue(all('deliver' in i['stage'] for i in report['issues']))
+        deliver = script(self.bin / 'deliver', 'echo acknowledged\n')
+        with mock.patch.object(vr.time, 'time', return_value=time.time() + 601):
+            self.run_helper('--deliver', deliver)
+        rc, report = self.check('--deliver', deliver)
+        self.assertEqual(rc, 0)
+        self.assertEqual(report['counts']['complete'], 2)
+
+    def test_required_hooks_and_missing_engine_cannot_look_complete(self):
+        self.add('a.WAV')
+        self.run_helper()
+        rc, report = self.check('--engine', '', '--require', 'tidy', '--require', 'deliver', '--require', 'done')
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(report['issues']), 5)  # engine, 3 hooks, old line with no import id
+
+    def test_checks_transcript_receipt_and_missing_source(self):
+        self.add('a.WAV')
+        self.run_helper()
+        (self.out / 'a.txt').unlink()
+        rc, report = self.check()
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['issues'][0]['stage'], 'transcript missing or mismatched')
+        (self.dir / 'a.WAV').unlink()
+        rc, report = self.check()
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['issues'][0]['stage'], 'source gone')
+
+    def test_done_receipt_is_required_even_after_transcription(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        done = script(self.bin / 'done', 'echo acknowledged\n')
+        self.run_helper()
+        rc, report = self.check('--done', done)
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['issues'], [{'import': 'imp-1', 'stage': 'done hook pending'}])
+        self.run_helper('--done', done)
+        self.assertEqual(self.check('--done', done)[0], 0)
+        self.add('b.WAV', **{'import': 'imp-1'})
+        self.assertEqual(self.check('--done', done)[0], 1)
+
+    def test_since_does_not_misidentify_registered_older_audio_as_orphan(self):
+        self.add('old.WAV', imported_at='2026-10-20T09:00:00+09:00')
+        rc, report = self.check('--since', '2026-10-21')
+        self.assertEqual(rc, 0)
+        self.assertEqual(report['counts']['recordings'], 0)
+        self.assertEqual(report['counts']['unregistered'], 0)
+
 
 class Command(Base):
     """velcro recordings hands the settings to the helper."""
@@ -341,10 +445,14 @@ class Command(Base):
         r = subprocess.run(velcro + ['recordings', 'run'], env=env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.out / 's.txt').read_text(), 'heard: s.WAV\n')
-        self.assertTrue(list((home / '.local/state/velcro').glob('recordings-*.json')))
+        state = home / ('Library/Application Support/velcro' if sys.platform == 'darwin' else '.local/state/velcro')
+        self.assertTrue(list(state.glob('recordings-*.json')))
         st = subprocess.run(velcro + ['recordings'], env=env, capture_output=True, text=True)
         self.assertIn('s.WAV', st.stdout)
         self.assertIn('done', st.stdout)
+        health = subprocess.run(velcro + ['recordings', 'check', '--require', 'deliver'], env=env, capture_output=True, text=True)
+        self.assertEqual(health.returncode, 1, health.stderr)
+        self.assertIn({'stage': 'deliver not configured'}, json.loads(health.stdout)['issues'])
 
     def test_no_engine_no_run(self):
         """Bobby 2026-10-21: claude is never the recorder path's default; without an engine nothing runs."""
