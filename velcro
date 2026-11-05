@@ -29,6 +29,9 @@ IMPORT_STATUS=$SUPPORT/import.status
 IMPORT_LOCK=$CONF_DIR/.import.lock
 IMPORT_AGAIN=$CONF_DIR/.import.again
 IMPORT_LABEL=$LABEL.import
+# The import agent also looks every few minutes, so a recorder whose mount was missed (asleep, a lost
+# notification) is imported while it stays plugged in. Without a registered recorder it exits at once.
+IMPORT_INTERVAL=300
 IMPORT_PLIST=$HOME/Library/LaunchAgents/$IMPORT_LABEL.plist
 MANIFEST=.velcro-import.jsonl
 CLIPS=$SUPPORT/clips
@@ -321,6 +324,7 @@ install_import_agent() {
   <key>Label</key><string>$IMPORT_LABEL</string>
   <key>ProgramArguments</key><array><string>$BIN</string><string>import</string><string>--auto</string></array>
   <key>StartOnMount</key><true/>
+  <key>StartInterval</key><integer>$IMPORT_INTERVAL</integer>
   <key>StandardOutPath</key><string>$LOG</string>
   <key>StandardErrorPath</key><string>$LOG</string>
 </dict>
@@ -800,6 +804,17 @@ flush_queue() {
   return 0
 }
 
+# A drive with the recorder's recordings folder that isn't a registered recorder: say so once per drive,
+# so a recorder whose volume ID or name changed (reformatted, replaced) isn't skipped without a word.
+note_unregistered() {
+  local mp=$1 sub=${$(setting import.folder)%/} id seen=$SUPPORT/unregistered.seen
+  [[ -n $sub && -d $mp/$sub ]] || return 0
+  id=$(volume_id "$mp") || return 0
+  [[ -f $seen ]] && grep -qxF -- "$id" "$seen" && return 0
+  print -r -- "$id" >>"$seen"
+  notify "${mp:t} has a $sub folder but isn't a registered recorder, so nothing was imported. If it's your recorder: velcro recorder add \"$mp\""
+}
+
 # velcro import [--auto] [mount point ...] | --files <file ...>
 cmd_import() {
   local auto= selected= mp round result=0
@@ -841,6 +856,8 @@ cmd_import() {
           import_volume "$mp"
         elif (( $# )); then
           print -u2 "not a registered recorder: $mp  (velcro recorder add \"$mp\")"
+        else
+          note_unregistered "$mp"
         fi
       done
     fi

@@ -56,6 +56,8 @@ class Install(unittest.TestCase):
         text = plist.read_text()
         self.assertIn('<key>StartOnMount</key><true/>', text)
         self.assertIn('<string>import</string><string>--auto</string>', text)
+        # A missed mount is caught by looking again every few minutes.
+        self.assertIn('<key>StartInterval</key><integer>300</integer>', text)
         self.assertRegex(self.calls.read_text(), r'bootstrap gui/\d+ .*io\.github\.dgitco\.velcro\.import\.plist')
 
     def test_app_install_keeps_an_import_agent_for_when_the_app_is_not_running(self):
