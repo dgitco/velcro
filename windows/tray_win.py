@@ -1,6 +1,6 @@
 """velcro tray icon for Windows (ctypes only): watches for recorders in the background and offers
 Import now / Open log / Quit from the notification-area icon. Untested outside Windows."""
-import ctypes, os, subprocess, sys, threading
+import ctypes, os, sys, threading
 from ctypes import wintypes
 import velcro_win as v
 
@@ -88,35 +88,7 @@ def message(text):
     u.MessageBoxW(None, text, "velcro", 0x40)  # MB_ICONINFORMATION
 
 
-def self_install():
-    """Double-clicking the downloaded velcro.exe installs it: copy to %LOCALAPPDATA%\\velcro\\app, start at sign-in,
-    start the installed copy. Re-running a newer download replaces the installed one. No admin needed."""
-    if not getattr(sys, "frozen", False):
-        return False
-    target = os.path.join(v.state_dir(), "app", "velcro.exe")
-    if os.path.normcase(os.path.abspath(sys.executable)) == os.path.normcase(os.path.abspath(target)):
-        return False
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    q = lambda x: "'" + x.replace("'", "''") + "'"
-    ps = (f"$t={q(target)}; Get-Process velcro -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -eq $t }} | Stop-Process -Force; "
-          f"for($i=0;$i -lt 30;$i++){{ try {{ Copy-Item -LiteralPath {q(sys.executable)} $t -Force -ErrorAction Stop; break }} catch {{ Start-Sleep 1 }} }}; "
-          "$l=Join-Path ([Environment]::GetFolderPath('Startup')) 'velcro.lnk'; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($l); "
-          "$s.TargetPath=$t; $s.Save(); Start-Process $t")
-    r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], creationflags=0x08000000)
-    log(f"install: {sys.executable} -> {target} rc={r.returncode}")
-    if r.returncode == 0 and os.path.exists(target):
-        hk = v.get(v.read_settings(), "record.hotkey")
-        message("velcro is installed and running (notification area, bottom right; it starts at sign-in too).\n\n"
-                f"Record: press {hk}, press it again to stop. The file is copied to {v.dest_dir(v.read_settings())}.\n"
-                "Recorder: plug it in, then right-click the velcro icon > Use <drive> as recorder.")
-    else:
-        message(f"velcro could not be installed (see {LOG}).")
-    return True
-
-
 def main():
-    if self_install():
-        return
     k.CreateMutexW(None, False, "Local\\velcro-tray")
     if k.GetLastError() == 183:  # ERROR_ALREADY_EXISTS: one tray icon per user
         message("velcro is already running (notification area, bottom right).")
