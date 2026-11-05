@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.10.1
+VERSION=0.10.2
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -188,6 +188,9 @@ cmd_status() {
     local sub=$(setting import.folder) alt
     print -r -- "        from ${sub:-the whole drive}, $(is_on import.delete && print "deleted from the recorder once verified" || print "kept on the recorder")$(is_on import.auto || print ", only with velcro import")"
     alt=$(renamed_mount "$dest") && print -r -- "        is the share mounted as $alt? then: velcro set import.dest ${dest/#${alt%-*}/$alt}"
+    if (( ${#regs} )) && is_on import.auto && ! pgrep -qf "$APP_EXEC" && ! launchctl print "gui/$UID/$IMPORT_LABEL" >/dev/null 2>&1; then
+      print -r -- "        ○ nothing imports a recorder plugged in now  →  open velcro.app, or velcro install"
+    fi
     (( ${#waiting} )) && print -r -- "        ${#waiting} recording(s) waiting on this Mac until that folder is attached"
   fi
   if [[ -n $inbox ]]; then
@@ -248,6 +251,10 @@ cmd_install() {
     stop_agent
     ln -sfh "$SELF" "$BIN" && print "linked: $BIN → $SELF"
     print "velcro.app reconnects your shares while it runs (it can start at login)"
+    # Importing stays with launchd: a recorder plugged in while the app is quit, crashed or not yet
+    # started after a restart is otherwise never imported, and nothing says so. The import lock keeps
+    # it and the app from copying at the same time.
+    install_import_agent
   else
     # Replace, don't write through: $BIN may be a link into velcro.app.
     [[ $SELF == "${BIN:A}" ]] || { rm -f "$BIN"; cp "$SELF" "$BIN"; chmod +x "$BIN"; }
@@ -305,6 +312,7 @@ stop_agent() {
 # a recorder plugged in, or the destination's drive or share coming back for recordings kept on this Mac.
 # Separate from the reconnect agent so a long import never holds up reconnecting.
 install_import_agent() {
+  mkdir -p "${IMPORT_PLIST:h}" || return 1
   cat >"$IMPORT_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

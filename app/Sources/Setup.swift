@@ -14,12 +14,24 @@ enum Setup {
     /// The first time an installed copy runs: start at login, point `velcro` into the app,
     /// and retire the LaunchAgent and SwiftBar plugin. The app's own engine is already
     /// running by then, so shares stay attached throughout.
+    ///
+    /// After an update, an installed copy whose command is already linked here runs `velcro install`
+    /// once more, so what the new version sets up (the import-on-mount agent) reaches existing setups too.
     static func firstLaunch() async {
         let defaults = UserDefaults.standard
-        guard isInstalled, !defaults.bool(forKey: "setUp") else { return }
-        defaults.set(true, forKey: "setUp")
-        try? SMAppService.mainApp.register()
-        await linkCommand()
+        guard isInstalled else { return }
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        if !defaults.bool(forKey: "setUp") {
+            defaults.set(true, forKey: "setUp")
+            defaults.set(version, forKey: "setUpVersion")
+            try? SMAppService.mainApp.register()
+            await linkCommand()
+            return
+        }
+        guard defaults.string(forKey: "setUpVersion") != version else { return }
+        defaults.set(version, forKey: "setUpVersion")
+        await Store.shared.loadEnv()
+        if commandIsLinked(Store.shared.env["BIN"]) { await linkCommand() }
     }
 
     /// `velcro install` from inside the bundle: links ~/.local/bin/velcro here and removes the
