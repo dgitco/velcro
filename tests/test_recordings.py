@@ -43,7 +43,7 @@ def script(path, body):
 
 class Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix='velcro-rec-test-'))
+        self.tmp = Path(tempfile.mkdtemp(prefix='velcro-rec-test-')).resolve()
         self.addCleanup(shutil.rmtree, self.tmp)
         self.dir, self.out, self.state, self.bin = (self.tmp / n for n in ('rec', 'out', 'state', 'bin'))
         for d in (self.dir, self.bin):
@@ -68,6 +68,20 @@ class Base(unittest.TestCase):
 
     def state_doc(self):
         return json.loads(next(self.state.glob('recordings-*.json')).read_text())
+
+    def share_mount(self, path):
+        """Model a separate share mount without requiring mount privileges."""
+        original = Path.stat
+
+        def mounted_stat(p, *args, **kwargs):
+            st = original(p, *args, **kwargs)
+            if p == path or path in p.parents:
+                fields = list(st)
+                fields[2] += 1  # st_dev
+                return os.stat_result(fields)
+            return st
+
+        return mock.patch.object(Path, 'stat', mounted_stat)
 
 
 class Steps(Base):
@@ -404,7 +418,8 @@ class SharedFolder(Base):
         self.out = self.tmp / 'out-link'
         self.out.symlink_to(real)
         self.add('a.WAV')
-        rc, _ = self.run_helper()
+        with self.share_mount(self.dir):
+            rc, _ = self.run_helper()
         self.assertEqual(rc, 0)
         self.assertEqual((real / 'a.txt').read_text(), 'heard: a.WAV\n')
 
@@ -474,10 +489,66 @@ class ShareTrust(Base):
         ran = self.tmp / 'engine-ran'
         self.engine = script(self.bin / 'swap',
                              f'echo ran > "{ran}"; mv "{sub}" "{self.dir}/old"; ln -s "{private}" "{sub}"; echo text\n')
-        self.run_helper()
+        with self.share_mount(self.dir):
+            self.run_helper()
         self.assertTrue(ran.exists(), 'the engine must run before the subfolder is swapped')
         self.assertEqual(victim.read_text(), 'keep me')
         self.assertFalse((private / 'notes.json').exists())
+
+    def test_same_filesystem_output_rejects_link_planted_between_runs(self):
+        self.add('first.WAV')
+        self.run_helper()
+        self.out.rename(self.tmp / 'old-output')
+        private = self.tmp / 'private'
+        private.mkdir()
+        (private / 'notes.txt').write_text('keep me')
+        self.out.symlink_to(private)
+        self.add('notes.WAV')
+        self.run_helper()
+        self.assertEqual((private / 'notes.txt').read_text(), 'keep me')
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ['notes.txt'])
+        self.assertIn('outside', self.state_doc()['failures']['notes.WAV']['error'])
+
+    def test_output_ancestor_links_outside_share_are_resolved(self):
+        real = self.tmp / 'real-home'
+        (real / 'transcripts').mkdir(parents=True)
+        (self.tmp / 'home').symlink_to(real)
+        (self.tmp / 'home-alias').symlink_to('home')
+        self.out = self.tmp / 'home-alias/transcripts/new'
+        self.add('a.WAV')
+        with self.share_mount(self.dir):
+            rc, output = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertTrue((real / 'transcripts/new/a.txt').is_file(), output)
+        self.assertEqual((real / 'transcripts/new/a.txt').read_text(), 'heard: a.WAV\n', output)
+        self.assertTrue((real / 'transcripts/new/a.json').is_file(), output)
+
+    def test_default_output_through_recordings_dir_link(self):
+        real = self.dir
+        self.dir = self.tmp / 'rec-link'
+        self.dir.symlink_to(real)
+        self.out = self.dir / '_velcro'
+        self.add('a.WAV')
+        rc, output = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertTrue((real / '_velcro/a.txt').is_file(), output)
+        self.assertEqual((real / '_velcro/a.txt').read_text(), 'heard: a.WAV\n', output)
+        self.assertTrue((real / '_velcro/a.json').is_file(), output)
+
+    def test_existing_output_folders_are_opened_without_mkdir(self):
+        self.out.mkdir()
+        self.add('a.WAV')
+        original = os.mkdir
+
+        def deny_existing(path, *args, **kwargs):
+            if kwargs.get('dir_fd') is not None:
+                raise PermissionError('SMB denies mkdir on an existing folder')
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(vr.os, 'mkdir', deny_existing):
+            rc, output = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.out / 'a.json').is_file(), output)
 
     def test_same_filesystem_output_rejects_swapped_parent(self):
         # A sibling on the same mount, as in /mnt/nas/me/{recordings,transcripts}.
@@ -595,6 +666,26 @@ class ShareTrust(Base):
                         os.close(fd)
                 self.assertEqual(path.read_text(), 'new')
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
+
+    def test_replaced_files_owned_by_another_user_are_0600(self):
+        self.out.mkdir()
+        for writer in ('put', 'put_at'):
+            with self.subTest(writer=writer):
+                path = self.out / writer
+                path.write_text('planted')
+                path.chmod(0o666)
+                # Exercise real replacement without needing permission to chown to another user.
+                with mock.patch.object(vr.os, 'geteuid', return_value=path.stat().st_uid + 1):
+                    if writer == 'put':
+                        vr.put(path, 'private transcript')
+                    else:
+                        fd = os.open(self.out, os.O_RDONLY | os.O_DIRECTORY)
+                        try:
+                            vr.put_at(fd, path.name, 'private transcript')
+                        finally:
+                            os.close(fd)
+                self.assertEqual(path.read_text(), 'private transcript')
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     @unittest.skipUnless(shutil.which('zsh'), 'velcro import needs zsh')
     def test_imported_recording_is_created_0600(self):

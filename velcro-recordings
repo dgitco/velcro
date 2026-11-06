@@ -114,10 +114,10 @@ def put(path, data):
 
 
 def file_mode(path, dir_fd=None):
-    """New files are private; replacing a regular file keeps its permissions, never a link target's."""
+    """Only our own regular files keep their permissions; all other replacements are private."""
     try:
         st = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
-        if stat.S_ISREG(st.st_mode):
+        if stat.S_ISREG(st.st_mode) and st.st_uid == os.geteuid():
             return stat.S_IMODE(st.st_mode)
     except FileNotFoundError:
         pass
@@ -160,40 +160,35 @@ def put_at(folder, name, data):
         raise
 
 
+def output_path(path, boundary):
+    """Resolve user aliases before entering the share, leaving every component on it literal."""
+    out = Path(os.path.abspath(path))
+    for _ in range(40):
+        for prefix in (*reversed(out.parents), out):
+            if prefix == boundary:
+                return out
+            if prefix.is_symlink():
+                target = Path(os.path.abspath(prefix.parent / os.readlink(prefix)))
+                out = target / out.relative_to(prefix)
+                break
+        else:
+            return out
+    raise RuntimeError(f'{path}: too many output folder links')
+
+
 class Run:
     def __init__(self, a):
         self.a = a
-        self.dir, self.out, self.state_dir = Path(a.dir), Path(a.out), Path(a.state)
-        # Resolve the user's aliases once. Below the share (including sibling folders on its mount),
-        # keep components literal so even an already planted link is refused.
-        out, top = Path(os.path.abspath(self.out)), self.dir.resolve()
-        for prefix in (*reversed(out.parents), out):
-            if prefix in (Path(os.path.abspath(self.dir)), top):
-                break
-            if prefix.is_symlink():
-                target = Path(os.path.abspath(prefix.parent / os.readlink(prefix)))
-                if prefix == out or target == top or top in target.parents:
-                    out = target / out.relative_to(prefix)
-                    break
-        mount, dev = top, top.stat().st_dev
+        self.dir, self.out, self.state_dir = Path(a.dir).resolve(), Path(a.out), Path(a.state)
+        # Find the mount before looking at output links: its siblings and final component are untrusted too.
+        mount, dev = self.dir, self.dir.stat().st_dev
         while mount.parent != mount and mount.parent.stat().st_dev == dev:
             mount = mount.parent
-        boundary = mount if mount.parent != mount else top
-        base = Path(os.path.commonpath([os.path.abspath(self.dir), out]))
-        self.out_path = base.resolve() / out.relative_to(base)
-        for prefix in (*reversed(out.parents), out):
-            if prefix == boundary:
-                self.out_path = boundary / out.relative_to(prefix)
-                break
-            if prefix.is_symlink():
-                target = Path(os.path.abspath(prefix.parent / os.readlink(prefix)))
-                if target == boundary or boundary in target.parents:
-                    self.out_path = target / out.relative_to(prefix)
-                    break
-            real = prefix.resolve()
-            if real == boundary or boundary in real.parents:
-                self.out_path = real / out.relative_to(prefix)
-                break
+        out, configured_dir = Path(os.path.abspath(self.out)), Path(os.path.abspath(a.dir))
+        if out == configured_dir or configured_dir in out.parents:
+            # The configured recordings alias is trusted once, including for the default output.
+            out = self.dir / out.relative_to(configured_dir)
+        self.out_path = output_path(out, mount)
         tag = hashlib.sha1(str(self.out.resolve()).encode()).hexdigest()[:10]
         self.state_file = self.state_dir / f'recordings-{tag}.json'
         self.lock_file = self.state_dir / f'recordings-{tag}.lock'
@@ -256,12 +251,17 @@ class Run:
         fd = os.open(self.out_path.anchor, os.O_RDONLY | os.O_DIRECTORY)
         try:
             for part in self.out_path.parts[1:]:
-                if create:
+                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                try:
+                    child = os.open(part, flags, dir_fd=fd)
+                except FileNotFoundError:
+                    if not create:
+                        raise
                     try:
                         os.mkdir(part, dir_fd=fd)
                     except FileExistsError:
                         pass
-                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                    child = os.open(part, flags, dir_fd=fd)
                 os.close(fd)
                 fd = child
             return fd
