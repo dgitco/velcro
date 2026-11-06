@@ -343,14 +343,36 @@ def _ver(t):
         return ()
 
 
+def http_get(url):
+    """GET through WinINet: Windows' own certificate checks (Python's ssl misses roots Windows fetches on demand)."""
+    import ctypes
+    from ctypes import wintypes
+    w = ctypes.windll.wininet
+    w.InternetOpenW.restype = w.InternetOpenUrlW.restype = ctypes.c_void_p
+    w.InternetOpenUrlW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+    w.InternetReadFile.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    w.InternetCloseHandle.argtypes = [ctypes.c_void_p]
+    s = w.InternetOpenW("velcro-windows", 0, None, None, 0)  # INTERNET_OPEN_TYPE_PRECONFIG: the user's proxy settings
+    if not s:
+        raise OSError("InternetOpen failed")
+    try:
+        h = w.InternetOpenUrlW(s, url, "Accept: application/vnd.github+json\r\n", -1, 0x80000000 | 0x04000000, None)  # RELOAD | NO_CACHE_WRITE
+        if not h:
+            raise OSError(f"InternetOpenUrl failed ({ctypes.GetLastError()})")
+        try:
+            out, buf, n = bytearray(), ctypes.create_string_buffer(65536), wintypes.DWORD()
+            while w.InternetReadFile(h, buf, len(buf), ctypes.byref(n)) and n.value:
+                out += buf.raw[:n.value]
+            return out.decode("utf-8")
+        finally:
+            w.InternetCloseHandle(h)
+    finally:
+        w.InternetCloseHandle(s)
+
+
 def newer_release(current=VERSION, fetch=None):
     """(version, page url, zip url) of the newest windows-v* release above `current`, else None. fetch(url) -> JSON text."""
-    if fetch is None:
-        import urllib.request
-        def fetch(url):
-            req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "velcro-windows"})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                return r.read().decode("utf-8")
+    fetch = fetch or http_get
     best = None
     for rel in json.loads(fetch(RELEASES)):
         tag = rel.get("tag_name", "")
