@@ -359,6 +359,7 @@ cmd_env() {
 #   import.folder = RECORD                          only this folder on the recorder (and below)
 #   import.delete = yes                             delete from the recorder once verified
 #   import.auto   = yes                             import as soon as a recorder is plugged in
+#   record.hotkey = ctrl+alt+r                      shortcut that starts and stops a recording (alt is option on a Mac)
 #   recorder      = uuid:<VolumeUUID> <label>       or name:<volume name>
 #   send.inbox    = /Volumes/home/inbox             where "velcro send" puts files: a share, Dropbox ...
 #   send.keep     = 14                              days before the inbox is cleaned; 0 keeps all
@@ -382,7 +383,7 @@ cmd_env() {
 #   recordings.since    = 2026-10-21                only recordings imported at or after this time
 #   recordings.timeout  = 10800                     seconds the engine may take (1800 + half the recording)
 
-KEYS=(import.dest import.ext import.folder import.delete import.auto recorder send.inbox send.keep map
+KEYS=(import.dest import.ext import.folder import.delete import.auto record.hotkey recorder send.inbox send.keep map
   mic.host mic.on mic.warm clip.host clip.on transcribe.lang transcribe.engine transcribe.login transcribe.codex transcribe.fallback
   recordings.dir recordings.out recordings.engine recordings.tidy recordings.deliver recordings.alert recordings.since
   recordings.timeout)
@@ -390,6 +391,7 @@ typeset -A DEFAULTS=(
   import.ext 'wav mp3 m4a aac flac wma ogg'
   import.delete yes
   import.auto yes
+  record.hotkey ctrl+alt+r
   mic.on no
   mic.warm 0
   clip.on no
@@ -439,6 +441,7 @@ cmd_set() {
   for v in "$@"; do
     case $key in
       import.delete|import.auto) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
+      record.hotkey) [[ ${(L)v} =~ '^((ctrl|control|alt|opt|option|shift|cmd|command)\+)+([abcdefghijklmnopqrstuvwxyz0123456789]|f([1-9]|1[0-2]))$' ]] || { print -u2 "record.hotkey is modifiers plus one key, like ctrl+alt+r"; return 2; } ;;
       import.folder) [[ $v != /* && $v != (..|*/..|../*|*/../*) ]] || { print -u2 "import.folder is a folder on the recorder, like RECORD"; return 2; } ;;
       send.keep) [[ $v == <-> ]] || { print -u2 "send.keep is a number of days"; return 2; } ;;
       mic.on|clip.on) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
@@ -1231,6 +1234,7 @@ settings ($SETTINGS):
   import.folder only this folder on the recorder, e.g. RECORD (default: the whole drive)
   import.delete delete from the recorder once every copy verifies (yes)
   import.auto   import as soon as a recorder is plugged in (yes)
+  record.hotkey shortcut that starts/stops a recording, uploaded like a recorder import (ctrl+alt+r)
   send.inbox    folder for sent files: /Volumes/home/inbox, a Dropbox folder ...
   send.keep     days to keep inbox files (${DEFAULTS[send.keep]}; 0 keeps them)
   map           path on another machine, e.g. "/Volumes/home -> /mnt/nas/me". Several rules:

@@ -27,11 +27,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Engine.shared.start()
         Clipboard.shared.start()
         Mic.shared.start()
+        HotkeyRecorder.shared.start()
         ClipSender.shared.start()
         Task {
             await Store.shared.loadEnv()
             await Store.shared.loadSettings()
             Importer.shared.start()
+            Updater.shared.start()
             await Setup.firstLaunch()
         }
     }
@@ -48,21 +50,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 struct MenuBarLabel: View {
     @ObservedObject private var store = Store.shared
     @ObservedObject private var importer = Importer.shared
+    @ObservedObject private var recorder = HotkeyRecorder.shared
 
     var body: some View {
         HStack(spacing: 4) {
             Image("Menubar" + store.icon.rawValue.capitalized)
-            if let progress = importer.progress {
+            if recorder.recording {
+                Image(systemName: "record.circle.fill").foregroundStyle(.red)
+                Text(recorder.elapsedText).monospacedDigit()
+            } else if let progress = importer.progress {
                 Text(progress.percent).monospacedDigit()
             }
         }
-        .accessibilityLabel("velcro, \(importer.progress?.summary ?? store.summary)")
+        .accessibilityLabel(recorder.recording ? "velcro, recording \(recorder.elapsedText)" : "velcro, \(importer.progress?.summary ?? store.summary)")
     }
 }
 
 /// The menu: plain text and velcro's own icons, laid out like assets/logo/mockup.html.
 struct MenuContent: View {
     @ObservedObject private var store = Store.shared
+    @ObservedObject private var updater = Updater.shared
 
     var body: some View {
         Button { SettingsWindow.show() } label: {
@@ -70,6 +77,10 @@ struct MenuContent: View {
         }
         .labelStyle(.titleAndIcon)
         Text(store.summary)
+        if let version = updater.available {
+            Button("Update to \(version)") { updater.update() }
+                .disabled(updater.updating)
+        }
 
         ForEach(store.servers) { server in
             Divider()
@@ -124,6 +135,7 @@ struct MenuContent: View {
 /// Both automatic recorder imports and manual uploads use the recording import folder.
 struct ImportMenu: View {
     @ObservedObject private var importer = Importer.shared
+    @ObservedObject private var recorder = HotkeyRecorder.shared
     @ObservedObject private var store = Store.shared
 
     var body: some View {
@@ -143,6 +155,7 @@ struct ImportMenu: View {
             }
             Button("Upload Recordings…") { importer.chooseRecordings() }
                 .disabled(importer.running)
+            Button(recorder.recording ? "Stop Recording and Upload (\(recorder.hotkeyText))" : "Start Recording (\(recorder.hotkeyText))") { recorder.toggle() }
             if !importer.candidates.isEmpty {
                 Menu("Register Recorder") {
                     ForEach(importer.candidates) { volume in

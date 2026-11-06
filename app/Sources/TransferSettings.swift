@@ -3,6 +3,7 @@ import SwiftUI
 // MARK: - Import
 
 struct ImportPane: View {
+    @ObservedObject private var recorder = HotkeyRecorder.shared
     @ObservedObject private var store = Store.shared
     @ObservedObject private var importer = Importer.shared
 
@@ -52,6 +53,18 @@ struct ImportPane: View {
                 Text("Import")
             } footer: {
                 Text("Each file is copied, read back from the folder, and compared by size and SHA-256. If any file doesn't match, nothing is deleted. The folder can be on this Mac, an external drive, or a share. When its drive or share isn't attached, recordings wait on this Mac and move over once it is. Every import is added to .velcro-import.jsonl in the folder.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                SettingField(title: "Shortcut", key: "record.hotkey", prompt: "ctrl+alt+r")
+                if !recorder.hotkeyError.isEmpty {
+                    Text(recorder.hotkeyError).font(.caption).foregroundStyle(.red)
+                }
+            } header: {
+                Text("Record with a shortcut")
+            } footer: {
+                Text("Press it to start recording from this Mac's microphone and again to stop. The recording is uploaded to the import folder like a recorder's files. Modifiers are ctrl, alt (option), shift, cmd, plus one letter, digit or F1–F12.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
