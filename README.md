@@ -216,7 +216,7 @@ velcro recordings run                                  # do it now (a timer runs
 | `transcribe.codex` | `~/.codex` | Codex folder whose ChatGPT login to use |
 | `transcribe.fallback` | | command run with the file when no engine can transcribe it; none reports the failure |
 | `recordings.dir` | `import.dest` | folder with `.velcro-import.jsonl` that `velcro recordings` works through |
-| `recordings.out` | `<recordings.dir>/_velcro` | where transcripts and hook output go |
+| `recordings.out` | `<recordings.dir>/_velcro` | where transcripts and hook output go; on the same volume as the recordings, give the real path (links there are refused, since anyone with write access to that volume could swap them) |
 | `recordings.engine` | | a command line that prints the text (`{file}`, `{json}`), or `claude` or `codex`; required |
 | `recordings.tidy` | | command run after transcribing |
 | `recordings.deliver` | | command run after tidying |
