@@ -23,6 +23,8 @@ VELCRO_TRANSCRIPT_JSON, VELCRO_OUT and, for deliver, VELCRO_TIDIED. A step that 
 not 0, or a timeout) is tried again after 10, 20, 40 ... minutes (at most 6 hours); from the third
 failure on, --alert <command> runs with one line of text last, at most once a day per file and step.
 Nothing is ever deleted or changed in <dir>. One run at a time per <out> (a lock in <state>).
+File variables are private copies (0600, in a 0700 temporary folder), removed after each hook;
+the audio is copied and hash-checked again. VELCRO_OUT remains the output folder.
 Exit status: 0 done (failures are counted in the state and retried later), 2 usage.
 """
 import argparse
@@ -102,15 +104,24 @@ def put(path, data):
     is a new one (mkstemp: never an existing name or a link someone left in a shared folder)."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f'.{path.name}.', suffix='.part')
     try:
-        mask = os.umask(0)
-        os.umask(mask)
-        os.fchmod(fd, 0o666 & ~mask)  # what a plain open() would have given, not mkstemp's 0600
+        os.fchmod(fd, file_mode(path))
         with os.fdopen(fd, 'w') as f:
             f.write(data)
         os.replace(tmp, path)  # replaces a link at path itself, never what it points to
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def file_mode(path, dir_fd=None):
+    """New files are private; replacing a regular file keeps its permissions, never a link target's."""
+    try:
+        st = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+        if stat.S_ISREG(st.st_mode):
+            return stat.S_IMODE(st.st_mode)
+    except FileNotFoundError:
+        pass
+    return 0o600
 
 
 def read_small(path, limit=1 << 20):
@@ -131,12 +142,13 @@ def put_at(folder, name, data):
     """put() into the open folder <folder> (a descriptor): the folder can't be swapped for a link meanwhile."""
     while True:
         tmp = f'.{name}.{secrets.token_hex(4)}.part'
-        try:  # 0o666 less the umask, as a plain open() gives
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666, dir_fd=folder)
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
             break
         except FileExistsError:
             continue
     try:
+        os.fchmod(fd, file_mode(name, dir_fd=folder))
         with os.fdopen(fd, 'w') as f:
             f.write(data)
         os.replace(tmp, name, src_dir_fd=folder, dst_dir_fd=folder)
@@ -152,6 +164,36 @@ class Run:
     def __init__(self, a):
         self.a = a
         self.dir, self.out, self.state_dir = Path(a.dir), Path(a.out), Path(a.state)
+        # Resolve the user's aliases once. Below the share (including sibling folders on its mount),
+        # keep components literal so even an already planted link is refused.
+        out, top = Path(os.path.abspath(self.out)), self.dir.resolve()
+        for prefix in (*reversed(out.parents), out):
+            if prefix in (Path(os.path.abspath(self.dir)), top):
+                break
+            if prefix.is_symlink():
+                target = Path(os.path.abspath(prefix.parent / os.readlink(prefix)))
+                if prefix == out or target == top or top in target.parents:
+                    out = target / out.relative_to(prefix)
+                    break
+        mount, dev = top, top.stat().st_dev
+        while mount.parent != mount and mount.parent.stat().st_dev == dev:
+            mount = mount.parent
+        boundary = mount if mount.parent != mount else top
+        base = Path(os.path.commonpath([os.path.abspath(self.dir), out]))
+        self.out_path = base.resolve() / out.relative_to(base)
+        for prefix in (*reversed(out.parents), out):
+            if prefix == boundary:
+                self.out_path = boundary / out.relative_to(prefix)
+                break
+            if prefix.is_symlink():
+                target = Path(os.path.abspath(prefix.parent / os.readlink(prefix)))
+                if target == boundary or boundary in target.parents:
+                    self.out_path = target / out.relative_to(prefix)
+                    break
+            real = prefix.resolve()
+            if real == boundary or boundary in real.parents:
+                self.out_path = real / out.relative_to(prefix)
+                break
         tag = hashlib.sha1(str(self.out.resolve()).encode()).hexdigest()[:10]
         self.state_file = self.state_dir / f'recordings-{tag}.json'
         self.lock_file = self.state_dir / f'recordings-{tag}.lock'
@@ -208,27 +250,24 @@ class Run:
         top = os.path.realpath(self.dir)
         return os.path.commonpath([top, os.path.realpath(path)]) == top != os.path.realpath(path)
 
-    def open_out(self):
-        """The output folder, open. The default one, <dir>/_velcro, is inside the recordings folder, where a share user
-        can make it a link to any folder of this account's (a transcript would then replace notes.txt there): when the
-        output folder is inside, the folder actually opened must be too. Write through the descriptor, not the path."""
-        def within(path, top):  # path is top or under it, both already absolute
-            return os.path.commonpath([top, path]) == top
-        fd = os.open(self.out, os.O_RDONLY | os.O_DIRECTORY)
-        tops = {os.path.abspath(self.dir), os.path.realpath(self.dir)}
-        out = os.path.abspath(self.out)
-        # Inside if its path is, whichever way the recordings folder is spelt, or if the folder that holds it really
-        # is (a link of the user's own pointing into the share): there its last part can be swapped by a share user.
-        if any(within(out, t) for t in tops) or within(os.path.realpath(os.path.dirname(out)), os.path.realpath(self.dir)):
-            where = opened_path(fd)
-            if where is None:  # no /proc or F_GETPATH: the open folder must be the one at the path, not a link
-                at, st = os.lstat(self.out), os.fstat(fd)
-                where = str(self.out) if stat.S_ISDIR(at.st_mode) and (at.st_dev, at.st_ino) == (st.st_dev, st.st_ino) else None
-            # The recordings folder itself is allowed as the output folder (it was before).
-            if not where or not within(os.path.realpath(where), os.path.realpath(self.dir)):
+    def open_out(self, create=False):
+        """Walk from the root using descriptors, never following a link or mkdir-ing through one.
+        This also protects output elsewhere on the share's filesystem, outside recordings.dir."""
+        fd = os.open(self.out_path.anchor, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in self.out_path.parts[1:]:
+                if create:
+                    try:
+                        os.mkdir(part, dir_fd=fd)
+                    except FileExistsError:
+                        pass
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                 os.close(fd)
-                raise RuntimeError(f'{self.out}: outside {self.dir} or not a folder')
-        return fd
+                fd = child
+            return fd
+        except OSError as e:
+            os.close(fd)
+            raise RuntimeError(f'{self.out}: outside the output folder or not a folder: {e.strerror}') from e
 
     def paths(self, rec):
         # memo.wav and memo.m4a share a stem: the one transcribed first keeps memo.*, the other gets
@@ -278,9 +317,9 @@ class Run:
                 where = real if (at.st_dev, at.st_ino) == (st.st_dev, st.st_ino) else None
             if not stat.S_ISREG(st.st_mode) or not where or not self.inside(where):
                 raise RuntimeError(f"{rec['file']}: outside {self.dir} or not a file")
-            (work / 'in').mkdir()
+            (work / 'in').mkdir(mode=0o700)
             copy, h = work / 'in' / Path(rec['file']).name, hashlib.sha256()
-            with open(copy, 'xb') as out:
+            with os.fdopen(os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as out:
                 for b in iter(lambda: f.read(1 << 20), b''):
                     h.update(b)
                     out.write(b)
@@ -337,11 +376,39 @@ class Run:
         return f"{len(text)} characters in {doc['wall_s']} s"
 
     def hook(self, rec, step):
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='velcro-rec-', dir=self.state_dir) as work:
+            return self.hook_in(rec, step, Path(work))
+
+    def hook_in(self, rec, step, work):
         p = self.paths(rec)
-        env = dict(os.environ, VELCRO_RECORDING=str(p['audio']), VELCRO_RECORD=json.dumps(rec, ensure_ascii=False),
-                   VELCRO_TRANSCRIPT=str(p['txt']), VELCRO_TRANSCRIPT_JSON=str(p['json']), VELCRO_OUT=str(self.out))
-        if step == 'deliver':
-            env['VELCRO_TIDIED'] = str(p['tidy']) if p['tidy'].exists() else ''
+        audio, got = self.copy_in(rec, p['audio'], work)
+        if rec.get('sha256') and got != rec['sha256']:
+            raise RuntimeError(f"{rec['file']}: SHA-256 doesn't match the import record")
+        env = dict(os.environ, VELCRO_RECORDING=str(audio), VELCRO_RECORD=json.dumps(rec, ensure_ascii=False),
+                   VELCRO_OUT=str(self.out))
+        out = self.open_out()
+        try:
+            for key, var in (('txt', 'VELCRO_TRANSCRIPT'), ('json', 'VELCRO_TRANSCRIPT_JSON'), ('tidy', 'VELCRO_TIDIED')):
+                if key == 'tidy' and step != 'deliver':
+                    continue
+                try:
+                    fd = os.open(p[key].name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=out)
+                except FileNotFoundError:
+                    if key == 'tidy' and not self.a.tidy:
+                        env[var] = ''
+                        continue
+                    raise
+                copy = work / p[key].name
+                with os.fdopen(fd, 'rb') as source:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise RuntimeError(f'{p[key]}: not a regular file')
+                    with os.fdopen(os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as dest:
+                        for b in iter(lambda: source.read(1 << 20), b''):
+                            dest.write(b)
+                env[var] = str(copy)
+        finally:
+            os.close(out)
         argv, _ = command(getattr(self.a, step))
         try:
             r = run_limited(argv, HOOK_TIMEOUT_S, env)
@@ -408,7 +475,6 @@ class Run:
             return self.steps()
 
     def steps(self):
-        self.out.mkdir(parents=True, exist_ok=True)
         started, worked = time.time(), False
         for rec in self.records():
             while True:
@@ -420,6 +486,8 @@ class Run:
                     return 0
                 worked = True
                 try:
+                    out = self.open_out(create=True)
+                    os.close(out)
                     msg = self.transcribe(rec) if step == 'transcribe' else self.hook(rec, step)
                 except Exception as e:  # any failure is counted and retried; the next file still runs
                     self.failed(rec, step, e)
