@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             await Store.shared.loadEnv()
             await Store.shared.loadSettings()
             Importer.shared.start()
+            Updater.shared.start()
             await Setup.firstLaunch()
         }
     }
@@ -68,6 +69,7 @@ struct MenuBarLabel: View {
 /// The menu: plain text and velcro's own icons, laid out like assets/logo/mockup.html.
 struct MenuContent: View {
     @ObservedObject private var store = Store.shared
+    @ObservedObject private var updater = Updater.shared
 
     var body: some View {
         Button { SettingsWindow.show() } label: {
@@ -75,6 +77,10 @@ struct MenuContent: View {
         }
         .labelStyle(.titleAndIcon)
         Text(store.summary)
+        if let version = updater.available {
+            Button("Update to \(version)") { updater.update() }
+                .disabled(updater.updating)
+        }
 
         ForEach(store.servers) { server in
             Divider()
