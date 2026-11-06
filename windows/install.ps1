@@ -11,6 +11,9 @@ Get-Process velcro -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $e
 Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $dir | Out-Null
 Copy-Item (Join-Path $src '*') $dir -Recurse -Force
+# A zip saved by a browser and unzipped in Explorer marks every file as from the internet, and the copies keep the mark;
+# then starting velcro.exe (now and at every sign-in) stops at Windows' "Do you want to run this file?" warning.
+Get-ChildItem $dir -Recurse -File | Unblock-File
 $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'velcro.lnk'
 $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
 $s.TargetPath = $exe; $s.WorkingDirectory = $dir; $s.Save()

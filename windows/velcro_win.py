@@ -10,7 +10,7 @@ Python standard library only. Everything below `Windows layer` is portable so it
 """
 import hashlib, json, os, shutil, sys, threading, time, wave, datetime
 
-VERSION = "0.2.0"  # windows-v<VERSION> on GitHub releases
+VERSION = "0.2.1"  # windows-v<VERSION> on GitHub releases
 RELEASES = "https://api.github.com/repos/dgitco/velcro/releases?per_page=30"
 SEP = "\t"
 MANIFEST = ".velcro-import.jsonl"
