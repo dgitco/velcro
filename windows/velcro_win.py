@@ -10,6 +10,8 @@ Python standard library only. Everything below `Windows layer` is portable so it
 """
 import hashlib, json, os, shutil, sys, threading, time, wave, datetime
 
+VERSION = "0.2.0"  # windows-v<VERSION> on GitHub releases
+RELEASES = "https://api.github.com/repos/dgitco/velcro/releases?per_page=30"
 SEP = "\t"
 MANIFEST = ".velcro-import.jsonl"
 IMPORT_LOCK = threading.Lock()  # one import at a time: hotkey upload, "Import now" and the watcher share the manifest
@@ -332,6 +334,33 @@ def is_recorder(s, label, serial):
         if (kind == "uuid" and key.upper() == serial) or (kind == "name" and key == label):
             return True
     return False
+
+
+def _ver(t):
+    try:
+        return tuple(int(x) for x in t.split("."))
+    except ValueError:
+        return ()
+
+
+def newer_release(current=VERSION, fetch=None):
+    """(version, page url, zip url) of the newest windows-v* release above `current`, else None. fetch(url) -> JSON text."""
+    if fetch is None:
+        import urllib.request
+        def fetch(url):
+            req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "velcro-windows"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.read().decode("utf-8")
+    best = None
+    for rel in json.loads(fetch(RELEASES)):
+        tag = rel.get("tag_name", "")
+        if not tag.startswith("windows-v") or rel.get("draft"):
+            continue
+        v = tag[len("windows-v"):]
+        if _ver(v) > _ver(current) and (best is None or _ver(v) > _ver(best[0])):
+            z = next((a.get("browser_download_url") for a in rel.get("assets", []) if a.get("name", "").endswith(".zip")), None)
+            best = (v, rel.get("html_url", ""), z or rel.get("html_url", ""))
+    return best
 
 
 def add_recorder(s, label, serial):

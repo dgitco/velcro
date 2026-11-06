@@ -84,5 +84,18 @@ class T(unittest.TestCase):
         self.assertEqual(e["sha256"], v.sha256_file(os.path.join(self.dest, "20261103120000.wav")))
 
 
+
+class Releases(unittest.TestCase):
+    def test_newer_windows_release_only(self):
+        import json as j
+        rels = [{"tag_name": "v0.11.0", "assets": [{"name": "velcro-0.11.0.zip", "browser_download_url": "mac"}]},
+                {"tag_name": "windows-v0.3.0", "draft": True, "assets": []},
+                {"tag_name": "windows-v0.2.1", "html_url": "page", "assets": [{"name": "velcro-windows.zip", "browser_download_url": "zip"}]},
+                {"tag_name": "windows-v0.1.0", "assets": []}]
+        f = lambda url: j.dumps(rels)
+        self.assertEqual(v.newer_release("0.2.0", f), ("0.2.1", "page", "zip"))
+        self.assertIsNone(v.newer_release("0.2.1", f))
+        self.assertEqual(v.newer_release("0.1.0", f)[0], "0.2.1")
+
 if __name__ == "__main__":
     unittest.main()
