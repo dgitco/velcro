@@ -12,7 +12,9 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -41,7 +43,7 @@ def script(path, body):
 
 class Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix='velcro-rec-test-'))
+        self.tmp = Path(tempfile.mkdtemp(prefix='velcro-rec-test-')).resolve()
         self.addCleanup(shutil.rmtree, self.tmp)
         self.dir, self.out, self.state, self.bin = (self.tmp / n for n in ('rec', 'out', 'state', 'bin'))
         for d in (self.dir, self.bin):
@@ -66,6 +68,20 @@ class Base(unittest.TestCase):
 
     def state_doc(self):
         return json.loads(next(self.state.glob('recordings-*.json')).read_text())
+
+    def share_mount(self, path):
+        """Model a separate share mount without requiring mount privileges."""
+        original = Path.stat
+
+        def mounted_stat(p, *args, **kwargs):
+            st = original(p, *args, **kwargs)
+            if p == path or path in p.parents:
+                fields = list(st)
+                fields[2] += 1  # st_dev
+                return os.stat_result(fields)
+            return st
+
+        return mock.patch.object(Path, 'stat', mounted_stat)
 
 
 class Steps(Base):
@@ -402,7 +418,8 @@ class SharedFolder(Base):
         self.out = self.tmp / 'out-link'
         self.out.symlink_to(real)
         self.add('a.WAV')
-        rc, _ = self.run_helper()
+        with self.share_mount(self.dir):
+            rc, _ = self.run_helper()
         self.assertEqual(rc, 0)
         self.assertEqual((real / 'a.txt').read_text(), 'heard: a.WAV\n')
 
@@ -455,6 +472,239 @@ class SharedFolder(Base):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ShareTrust(Base):
+    """Security follow-up: output aliases, mount siblings, hook inputs, mkdir and file modes."""
+
+    def test_user_output_link_into_share_rejects_swapped_subfolder(self):
+        sub = self.dir / 'sub'
+        sub.mkdir()
+        private = self.tmp / 'private'
+        private.mkdir()
+        victim = private / 'notes.txt'
+        victim.write_text('keep me')
+        self.out.symlink_to(sub)
+        self.add('notes.WAV')
+        ran = self.tmp / 'engine-ran'
+        self.engine = script(self.bin / 'swap',
+                             f'echo ran > "{ran}"; mv "{sub}" "{self.dir}/old"; ln -s "{private}" "{sub}"; echo text\n')
+        with self.share_mount(self.dir):
+            self.run_helper()
+        self.assertTrue(ran.exists(), 'the engine must run before the subfolder is swapped')
+        self.assertEqual(victim.read_text(), 'keep me')
+        self.assertFalse((private / 'notes.json').exists())
+
+    def test_same_filesystem_output_rejects_link_planted_between_runs(self):
+        self.add('first.WAV')
+        self.run_helper()
+        self.out.rename(self.tmp / 'old-output')
+        private = self.tmp / 'private'
+        private.mkdir()
+        (private / 'notes.txt').write_text('keep me')
+        self.out.symlink_to(private)
+        self.add('notes.WAV')
+        self.run_helper()
+        self.assertEqual((private / 'notes.txt').read_text(), 'keep me')
+        self.assertEqual(sorted(p.name for p in private.iterdir()), ['notes.txt'])
+        self.assertIn('outside', self.state_doc()['failures']['notes.WAV']['error'])
+
+    def test_output_ancestor_links_outside_share_are_resolved(self):
+        real = self.tmp / 'real-home'
+        (real / 'transcripts').mkdir(parents=True)
+        (self.tmp / 'home').symlink_to(real)
+        (self.tmp / 'home-alias').symlink_to('home')
+        self.out = self.tmp / 'home-alias/transcripts/new'
+        self.add('a.WAV')
+        with self.share_mount(self.dir):
+            rc, output = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertTrue((real / 'transcripts/new/a.txt').is_file(), output)
+        self.assertEqual((real / 'transcripts/new/a.txt').read_text(), 'heard: a.WAV\n', output)
+        self.assertTrue((real / 'transcripts/new/a.json').is_file(), output)
+
+    def test_default_output_through_recordings_dir_link(self):
+        real = self.dir
+        self.dir = self.tmp / 'rec-link'
+        self.dir.symlink_to(real)
+        self.out = self.dir / '_velcro'
+        self.add('a.WAV')
+        rc, output = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertTrue((real / '_velcro/a.txt').is_file(), output)
+        self.assertEqual((real / '_velcro/a.txt').read_text(), 'heard: a.WAV\n', output)
+        self.assertTrue((real / '_velcro/a.json').is_file(), output)
+
+    def test_existing_output_folders_are_opened_without_mkdir(self):
+        self.out.mkdir()
+        self.add('a.WAV')
+        original = os.mkdir
+
+        def deny_existing(path, *args, **kwargs):
+            if kwargs.get('dir_fd') is not None:
+                raise PermissionError('SMB denies mkdir on an existing folder')
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(vr.os, 'mkdir', deny_existing):
+            rc, output = self.run_helper()
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.out / 'a.json').is_file(), output)
+
+    def test_same_filesystem_output_rejects_swapped_parent(self):
+        # A sibling on the same mount, as in /mnt/nas/me/{recordings,transcripts}.
+        parent = self.tmp / 'transcripts'
+        self.out = parent / 'nested'
+        self.out.mkdir(parents=True)
+        private = self.tmp / 'private'
+        (private / 'nested').mkdir(parents=True)
+        victim = private / 'nested/notes.txt'
+        victim.write_text('keep me')
+        self.assertEqual(self.out.stat().st_dev, self.dir.stat().st_dev)
+        self.add('notes.WAV')
+        self.engine = script(self.bin / 'swap',
+                             f'mv "{parent}" "{self.tmp}/old"; ln -s "{private}" "{parent}"; echo text\n')
+        self.run_helper()
+        self.assertEqual(victim.read_text(), 'keep me')
+        self.assertFalse((private / 'nested/notes.json').exists())
+
+    def test_hooks_receive_private_copies_removed_after_each_hook(self):
+        self.add('a.WAV')
+        self.run_helper()
+        (self.out / 'a.tidy.txt').write_text('tidied\n')
+        secret = self.tmp / 'secret'
+        secret.write_text('server-secret')
+        keys = ('VELCRO_TRANSCRIPT', 'VELCRO_TRANSCRIPT_JSON', 'VELCRO_TIDIED', 'VELCRO_RECORDING')
+        originals = (self.out / 'a.txt', self.out / 'a.json', self.out / 'a.tidy.txt', self.dir / 'a.WAV')
+        paths, modes, folders = [], [], []
+        run = vr.run_limited
+
+        def swap_then_run(argv, timeout, env=None):
+            if env and 'VELCRO_TRANSCRIPT' in env:
+                for key in keys:
+                    path = Path(env[key])
+                    paths.append(path)
+                    modes.append(stat.S_IMODE(path.stat().st_mode))
+                    folders.append(stat.S_IMODE(path.parent.stat().st_mode))
+                for path in originals:
+                    path.unlink()
+                    path.symlink_to(secret)
+            return run(argv, timeout, env)
+
+        deliver = script(self.bin / 'deliver',
+                         'cat "$VELCRO_TRANSCRIPT" "$VELCRO_TRANSCRIPT_JSON" "$VELCRO_TIDIED" "$VELCRO_RECORDING"\n')
+        with mock.patch.object(vr, 'run_limited', swap_then_run):
+            self.run_helper('--deliver', deliver)
+        delivered = (self.out / 'a.deliver.txt').read_text()
+        self.assertNotIn('server-secret', delivered)
+        self.assertIn('heard: a.WAV', delivered)
+        self.assertIn('RIFFaudio', delivered)
+        self.assertEqual(modes, [0o600] * len(keys))
+        self.assertEqual(folders, [0o700] * len(keys))
+        self.assertTrue(all(not path.exists() for path in paths))
+        self.assertTrue(all(not path.parent.exists() for path in paths))
+
+    def test_hook_refuses_transcript_link_planted_before_copy(self):
+        self.add('a.WAV')
+        self.run_helper()
+        secret = self.tmp / 'secret'
+        secret.write_text('server-secret')
+        (self.out / 'a.txt').unlink()
+        (self.out / 'a.txt').symlink_to(secret)
+        seen = self.tmp / 'delivered'
+        deliver = script(self.bin / 'deliver', f'cat "$VELCRO_TRANSCRIPT" > "{seen}"\n')
+        self.run_helper('--deliver', deliver)
+        self.assertFalse(seen.exists(), 'the hook ran with a planted transcript link')
+        self.assertEqual(self.state_doc()['failures']['a.WAV']['step'], 'deliver')
+
+    def test_intermediate_output_link_creates_no_folders_outside(self):
+        private = self.tmp / 'private'
+        private.mkdir()
+        (self.dir / 'jump').symlink_to(private)
+        self.out = self.dir / 'jump/new/deep'
+        self.add('a.WAV')
+        try:
+            self.run_helper()
+        except (OSError, RuntimeError):
+            pass  # refusing the folder before processing is also safe
+        self.assertEqual(list(private.iterdir()), [])
+
+    def test_new_transcripts_and_private_recording_are_0600(self):
+        self.add('a.WAV')
+        audio_modes = []
+        run = vr.run_limited
+
+        def inspect_audio(argv, timeout, env=None):
+            audio_modes.append(stat.S_IMODE(Path(argv[-1]).stat().st_mode))
+            return run(argv, timeout, env)
+
+        mask = os.umask(0o022)
+        try:
+            with mock.patch.object(vr, 'run_limited', inspect_audio):
+                self.run_helper()
+        finally:
+            os.umask(mask)
+        with self.subTest(file='private recording'):
+            self.assertEqual(audio_modes, [0o600])
+        for name in ('a.txt', 'a.json'):
+            with self.subTest(file=name):
+                self.assertEqual(stat.S_IMODE((self.out / name).stat().st_mode), 0o600)
+
+    def test_replaced_files_keep_their_mode(self):
+        self.out.mkdir()
+        for writer in ('put', 'put_at'):
+            with self.subTest(writer=writer):
+                path = self.out / writer
+                path.write_text('old')
+                path.chmod(0o640)
+                if writer == 'put':
+                    vr.put(path, 'new')
+                else:
+                    fd = os.open(self.out, os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        vr.put_at(fd, path.name, 'new')
+                    finally:
+                        os.close(fd)
+                self.assertEqual(path.read_text(), 'new')
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
+
+    def test_replaced_files_owned_by_another_user_are_0600(self):
+        self.out.mkdir()
+        for writer in ('put', 'put_at'):
+            with self.subTest(writer=writer):
+                path = self.out / writer
+                path.write_text('planted')
+                path.chmod(0o666)
+                # Exercise real replacement without needing permission to chown to another user.
+                with mock.patch.object(vr.os, 'geteuid', return_value=path.stat().st_uid + 1):
+                    if writer == 'put':
+                        vr.put(path, 'private transcript')
+                    else:
+                        fd = os.open(self.out, os.O_RDONLY | os.O_DIRECTORY)
+                        try:
+                            vr.put_at(fd, path.name, 'private transcript')
+                        finally:
+                            os.close(fd)
+                self.assertEqual(path.read_text(), 'private transcript')
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    @unittest.skipUnless(shutil.which('zsh'), 'velcro import needs zsh')
+    def test_imported_recording_is_created_0600(self):
+        # Exercise the real import writer with portable hashing/stat stubs, without macOS services.
+        source = self.tmp / 'a.WAV'
+        source.write_bytes(b'RIFFaudio')
+        self.out.mkdir()
+        body = (ROOT / 'velcro').read_text().split('put_verified() {', 1)[1].split('\n}\n', 1)[0]
+        code = ('setopt pipe_fail\nzmodload zsh/zselect\numask 022\n'
+                'size_of() { wc -c < "$1" | tr -d " "; }\n'
+                f'mktemp() {{ command mktemp {shlex.quote(str(self.tmp / "sum.XXXXXX"))}; }}\n'
+                'sha256() { /usr/bin/openssl dgst -sha256 -r < "$1" | cut -d " " -f1; }\n'
+                'progress() { :; }\nlog() { print -u2 -- "$*"; }\nLOG=/dev/null\n'
+                'put_verified() {' + body + '\n}\n'
+                f'put_verified {shlex.quote(str(source))} {shlex.quote(str(self.out))} ""\n')
+        result = subprocess.run(['zsh', '-c', code], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.out / source.name).read_bytes(), source.read_bytes())
+        self.assertEqual(stat.S_IMODE((self.out / source.name).stat().st_mode), 0o600)
 
 
 class Reliability(Base):

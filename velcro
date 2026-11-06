@@ -619,7 +619,7 @@ put_verified() {
   # Hidden until verified, so nothing downstream picks up half a file.
   part=$dir/.$name.velcro-part sum=$(mktemp -t velcro) || return 1
   rm -f "$part"
-  { tee -- "$part" <"$src" | /usr/bin/openssl dgst -sha256 -r >"$sum" } 2>>"$LOG" &
+  { (umask 077; tee -- "$part") <"$src" | /usr/bin/openssl dgst -sha256 -r >"$sum" } 2>>"$LOG" &
   pid=$!
   while kill -0 $pid 2>/dev/null; do progress copying $(size_of "$part"); zselect -t 50; done
   wait $pid || { log "import: copy failed: $src → $dir"; rm -f "$part" "$sum"; return 1; }
@@ -1261,6 +1261,8 @@ settings ($SETTINGS):
   recordings.tidy      command run after transcribing, with VELCRO_RECORDING, VELCRO_TRANSCRIPT,
                        VELCRO_TRANSCRIPT_JSON, VELCRO_RECORD and VELCRO_OUT; its output is kept
   recordings.deliver   command run after tidying, the same plus VELCRO_TIDIED
+                       File variables are private copies (0600, in a 0700 temp folder), removed after
+                       each hook; audio is copied and hash-checked again. VELCRO_OUT is the output folder.
   recordings.alert     command run with one line of text when a step fails a 3rd time (once a day)
   recordings.since     only recordings imported at or after this time, e.g. 2026-10-21
   recordings.timeout   seconds the engine may take before it is stopped (1800 + half the length);
