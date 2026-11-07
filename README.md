@@ -186,6 +186,7 @@ velcro recordings run                                  # do it now (a timer runs
 - **Engine (no default, pick one).** A local engine is the usual choice for meetings. `claude` or `codex` sends the audio through `velcro transcribe --engine` with that engine only (see above), which is meant for memos and short recordings; long meetings every day through your login is a bigger ask of a service that isn't a public API. Any other value is a command line that prints the text: `{file}` in it is the recording (otherwise the file goes last) and `{json}` a file it may write with details, which velcro keeps.
 - **Where things go.** `<recordings.out>/<name>.txt` and `<name>.json` (default `recordings.out`: `_velcro` inside the folder). The JSON is written last and marks the recording transcribed. Nothing in the recordings folder is changed or deleted.
 - **Hooks.** The tidy and deliver commands run with `VELCRO_RECORDING` (the audio), `VELCRO_RECORD` (its line from the import, JSON), `VELCRO_TRANSCRIPT`, `VELCRO_TRANSCRIPT_JSON` and `VELCRO_OUT`; deliver also gets `VELCRO_TIDIED`, what tidy printed. What each prints is kept as `<name>.tidy.txt` and `<name>.deliver.txt`; exit status 0 means done.
+  File variables point to private copies (0600 files in a 0700 temporary folder), removed after each hook; the audio is copied and checked against the import hash again. `VELCRO_OUT` remains the output folder, so hooks should read the supplied file variables rather than construct paths there.
 - **Failures.** A step that fails is tried again after 10, 20, 40 minutes and so on, at most 6 hours apart, without redoing the steps before it. From the third failure, `recordings.alert` (a command) runs with one line of text, at most once a day per file and step. Other recordings carry on meanwhile.
 - One run at a time; a run starts no new step after 40 minutes, the next run picks up. `recordings.since` skips everything imported before a date, so a new setup doesn't redo old recordings.
 
@@ -215,7 +216,7 @@ velcro recordings run                                  # do it now (a timer runs
 | `transcribe.codex` | `~/.codex` | Codex folder whose ChatGPT login to use |
 | `transcribe.fallback` | | command run with the file when no engine can transcribe it; none reports the failure |
 | `recordings.dir` | `import.dest` | folder with `.velcro-import.jsonl` that `velcro recordings` works through |
-| `recordings.out` | `<recordings.dir>/_velcro` | where transcripts and hook output go |
+| `recordings.out` | `<recordings.dir>/_velcro` | where transcripts and hook output go; on the same volume as the recordings, give the real path (links there are refused, since anyone with write access to that volume could swap them) |
 | `recordings.engine` | | a command line that prints the text (`{file}`, `{json}`), or `claude` or `codex`; required |
 | `recordings.tidy` | | command run after transcribing |
 | `recordings.deliver` | | command run after tidying |
