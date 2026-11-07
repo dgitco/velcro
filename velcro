@@ -723,8 +723,15 @@ import_recordings() {
   fi
   # A drive that holds the destination (or the queue) is never read as a recorder: the backups would be taken
   # for copies of themselves and deleted.
-  if [[ -n $mp ]] && { [[ ${dest:A}/ == "${mp:A}"/* ]] || [[ ${dir:A}/ == "${mp:A}"/* ]]; }; then
-    notify "$device holds the recordings folder ($dest), so it isn't imported as a recorder. Nothing was copied or deleted."
+  if [[ -n $mp ]] && { [[ ${dest:A}/ == "${mp:A}"/* ]] || [[ ${dir:A}/ == "${mp:A}"/* ]] ||
+                         [[ ${QUEUE:A}/ == "${mp:A}"/* ]]; }; then
+    log "import: $device holds the recordings folder or the queue; not imported, nothing copied or deleted"
+    # Once per drive: the import agent looks again every 5 minutes.
+    local seen=$SUPPORT/backup-drive.seen key="$uuid$SEP$device"
+    if ! { [[ -f $seen ]] && grep -qxF -- "$key" "$seen"; }; then
+      mkdir -p "$SUPPORT" && print -r -- "$key" >>"$seen"
+      notify "$device holds the recordings folder ($dest), so it isn't imported as a recorder. Nothing was copied or deleted."
+    fi
     return 1
   fi
   log "import: ${#files} file(s) from $device → $dir"
