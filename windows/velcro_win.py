@@ -117,6 +117,8 @@ def put_verified(src, dest_dir, want=None):
     n = 1
     while os.path.exists(os.path.join(dest_dir, name)):
         p = os.path.join(dest_dir, name)
+        if os.path.samefile(p, src):  # importing a file onto itself: never "already there", never deletable
+            return None
         if os.path.getsize(p) == size:
             want = want or sha256_file(src)
             if sha256_file(p) == want:
@@ -180,10 +182,28 @@ def dest_ready(dest):
     return bool(dest) and os.path.isdir(dest)
 
 
+def inside(path, root):
+    """True when path is root or under it (same drive and folder prefix, case-insensitive on Windows)."""
+    a, b = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(root))
+    try:
+        return os.path.commonpath([a, b]) == b
+    except ValueError:  # different drives
+        return False
+
+
+def holds_backups(root, s):
+    """The drive at root holds the backup folder or the waiting queue: it must never be read as a recorder,
+    or the backups would be "imported" onto themselves and then deleted."""
+    return inside(dest_dir(s), root) or inside(queue_dir(), root)
+
+
 def _import_volume(root, s, device=None, uuid="", log=print):
     """Import every recording on the recorder at root. Returns (imported, failed)."""
     dest = dest_dir(s)
     device = device or os.path.basename(root.rstrip("/\\")) or root
+    if holds_backups(root, s):
+        log(f"{device}: holds the backup folder {dest}, so it is not imported as a recorder (nothing copied or deleted)")
+        return 0, 0
     files = find_files(root, s)
     if dest_ready(dest):
         d, queued = dest, False
@@ -402,7 +422,7 @@ def run_loop(log=print, every=3, on_new=None):
             removable = {r for r, _, _ in removable_drives(fixed=False)} if on_new else set()
             for root, label, serial in removable_drives():
                 if not is_recorder(s, label, serial):
-                    if root in removable and (root + serial) not in offered:
+                    if root in removable and (root + serial) not in offered and not holds_backups(root, s):
                         offered.add(root + serial)
                         n = len(find_files(root, s))
                         if n:
@@ -439,6 +459,9 @@ def main(argv):
     elif cmd == "recorder" and argv[1:2] == ["add"] and len(argv) == 3:
         for r, label, serial in removable_drives():
             if r.rstrip("\\").upper() == argv[2].rstrip("\\").upper():
+                if holds_backups(r, s):
+                    print(f"{label} ({r}) holds the backup folder {dest_dir(s)}; not added")
+                    return 1
                 add_recorder(s, label, serial)
                 print(f"added {label} ({serial})")
                 return 0

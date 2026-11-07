@@ -85,6 +85,34 @@ class T(unittest.TestCase):
 
 
 
+class BackupDrive(unittest.TestCase):
+    """The drive that holds the backup folder registered as a recorder (D:\\Recordings on D:): nothing is
+    imported and nothing deleted (review of #29: the backups were taken for copies of themselves and deleted)."""
+    def setUp(self):
+        self.t = tempfile.mkdtemp()
+        self.drive = os.path.join(self.t, "D")
+        self.dest = os.path.join(self.drive, "Recordings")
+        os.makedirs(self.dest)
+        wav(os.path.join(self.dest, "kept.WAV"))
+        os.environ["LOCALAPPDATA"] = os.path.join(self.t, "local")
+        self.s = {"import.dest": [self.dest]}  # no import.folder: the whole drive
+
+    def test_import_from_the_backup_drive_does_nothing(self):
+        lines = []
+        self.assertEqual(v.import_volume(self.drive, self.s, "D", "AB12", log=lines.append), (0, 0))
+        self.assertTrue(os.path.exists(os.path.join(self.dest, "kept.WAV")))
+        self.assertTrue(any("backup folder" in l for l in lines))
+
+    def test_holds_backups(self):
+        self.assertTrue(v.holds_backups(self.drive, self.s))
+        self.assertFalse(v.holds_backups(os.path.join(self.t, "E"), self.s))
+
+    def test_a_file_is_never_its_own_copy(self):
+        f = os.path.join(self.dest, "kept.WAV")
+        self.assertIsNone(v.put_verified(f, self.dest))
+        self.assertTrue(os.path.exists(f))
+
+
 class Releases(unittest.TestCase):
     def test_newer_windows_release_only(self):
         import json as j
