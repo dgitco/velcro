@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.10.1
+VERSION=0.10.2
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -29,6 +29,9 @@ IMPORT_STATUS=$SUPPORT/import.status
 IMPORT_LOCK=$CONF_DIR/.import.lock
 IMPORT_AGAIN=$CONF_DIR/.import.again
 IMPORT_LABEL=$LABEL.import
+# The import agent also looks every few minutes, so a recorder whose mount was missed (asleep, a lost
+# notification) is imported while it stays plugged in. Without a registered recorder it exits at once.
+IMPORT_INTERVAL=300
 IMPORT_PLIST=$HOME/Library/LaunchAgents/$IMPORT_LABEL.plist
 MANIFEST=.velcro-import.jsonl
 CLIPS=$SUPPORT/clips
@@ -188,6 +191,9 @@ cmd_status() {
     local sub=$(setting import.folder) alt
     print -r -- "        from ${sub:-the whole drive}, $(is_on import.delete && print "deleted from the recorder once verified" || print "kept on the recorder")$(is_on import.auto || print ", only with velcro import")"
     alt=$(renamed_mount "$dest") && print -r -- "        is the share mounted as $alt? then: velcro set import.dest ${dest/#${alt%-*}/$alt}"
+    if (( ${#regs} )) && is_on import.auto && ! pgrep -qf "$APP_EXEC" && ! launchctl print "gui/$UID/$IMPORT_LABEL" >/dev/null 2>&1; then
+      print -r -- "        ○ nothing imports a recorder plugged in now  →  open velcro.app, or velcro install"
+    fi
     (( ${#waiting} )) && print -r -- "        ${#waiting} recording(s) waiting on this Mac until that folder is attached"
   fi
   if [[ -n $inbox ]]; then
@@ -248,6 +254,10 @@ cmd_install() {
     stop_agent
     ln -sfh "$SELF" "$BIN" && print "linked: $BIN → $SELF"
     print "velcro.app reconnects your shares while it runs (it can start at login)"
+    # Importing stays with launchd: a recorder plugged in while the app is quit, crashed or not yet
+    # started after a restart is otherwise never imported, and nothing says so. The import lock keeps
+    # it and the app from copying at the same time.
+    install_import_agent
   else
     # Replace, don't write through: $BIN may be a link into velcro.app.
     [[ $SELF == "${BIN:A}" ]] || { rm -f "$BIN"; cp "$SELF" "$BIN"; chmod +x "$BIN"; }
@@ -305,6 +315,7 @@ stop_agent() {
 # a recorder plugged in, or the destination's drive or share coming back for recordings kept on this Mac.
 # Separate from the reconnect agent so a long import never holds up reconnecting.
 install_import_agent() {
+  mkdir -p "${IMPORT_PLIST:h}" || return 1
   cat >"$IMPORT_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -313,6 +324,7 @@ install_import_agent() {
   <key>Label</key><string>$IMPORT_LABEL</string>
   <key>ProgramArguments</key><array><string>$BIN</string><string>import</string><string>--auto</string></array>
   <key>StartOnMount</key><true/>
+  <key>StartInterval</key><integer>$IMPORT_INTERVAL</integer>
   <key>StandardOutPath</key><string>$LOG</string>
   <key>StandardErrorPath</key><string>$LOG</string>
 </dict>
@@ -796,6 +808,17 @@ flush_queue() {
   return 0
 }
 
+# A drive with the recorder's recordings folder that isn't a registered recorder: say so once per drive,
+# so a recorder whose volume ID or name changed (reformatted, replaced) isn't skipped without a word.
+note_unregistered() {
+  local mp=$1 sub=${$(setting import.folder)%/} id seen=$SUPPORT/unregistered.seen
+  [[ -n $sub && -d $mp/$sub ]] || return 0
+  id=$(volume_id "$mp") || return 0
+  [[ -f $seen ]] && grep -qxF -- "$id" "$seen" && return 0
+  print -r -- "$id" >>"$seen"
+  notify "${mp:t} has a $sub folder but isn't a registered recorder, so nothing was imported. If it's your recorder: velcro recorder add \"$mp\""
+}
+
 # velcro import [--auto] [mount point ...] | --files <file ...>
 cmd_import() {
   local auto= selected= mp round result=0
@@ -837,6 +860,8 @@ cmd_import() {
           import_volume "$mp"
         elif (( $# )); then
           print -u2 "not a registered recorder: $mp  (velcro recorder add \"$mp\")"
+        else
+          note_unregistered "$mp"
         fi
       done
     fi
