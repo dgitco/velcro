@@ -37,8 +37,12 @@ typeset -a signing=(--timestamp)
 if [[ -n $SIGN_P12 ]]; then
   kc=$(mktemp -d)/sign.keychain-db
   kcpw=$(openssl rand -hex 16)
-  trap 'security delete-keychain "$kc" 2>/dev/null' EXIT
+  # Recent macOS: codesign only finds identities in keychains on the user search list. Add the throwaway
+  # keychain for the build and put the list back afterwards.
+  typeset -a kcs=(${(f)"$(security list-keychains -d user | tr -d '" ')"})
+  trap 'security list-keychains -d user -s $kcs; security delete-keychain "$kc" 2>/dev/null' EXIT
   security create-keychain -p "$kcpw" "$kc"
+  security list-keychains -d user -s "$kc" $kcs
   security set-keychain-settings "$kc"   # no auto-lock mid-build
   security unlock-keychain -p "$kcpw" "$kc"
   security import "$SIGN_P12" -k "$kc" -P "$SIGN_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
