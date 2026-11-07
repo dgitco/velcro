@@ -39,10 +39,17 @@ if [[ -n $SIGN_P12 ]]; then
   kcpw=$(openssl rand -hex 16)
   # Recent macOS: codesign only finds identities in keychains on the user search list. Add the throwaway
   # keychain for the build and put the list back afterwards.
-  typeset -a kcs=(${(f)"$(security list-keychains -d user | tr -d '" ')"})
-  trap 'security list-keychains -d user -s $kcs; security delete-keychain "$kc" 2>/dev/null' EXIT
+  # One path per line, each in quotes: strip only the leading blanks and the quotes, keep spaces inside.
+  kclist=$(security list-keychains -d user) || { print -u2 "can't read the keychain search list"; exit 1; }
+  typeset -a kcs=("${(@f)$(print -r -- $kclist | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')}")
+  kcs=(${kcs:#})
+  (( ${#kcs} )) || { print -u2 "the keychain search list is empty"; exit 1; }
+  # Each step on its own: a failed restore must not skip deleting the throwaway keychain.
+  trap 'security list-keychains -d user -s "${kcs[@]}" ||
+          print -u2 "put the keychain list back: security list-keychains -d user -s ${(j: :)${(q)kcs}}"
+        security delete-keychain "$kc" 2>/dev/null || true' EXIT
   security create-keychain -p "$kcpw" "$kc"
-  security list-keychains -d user -s "$kc" $kcs
+  security list-keychains -d user -s "$kc" "${kcs[@]}"
   security set-keychain-settings "$kc"   # no auto-lock mid-build
   security unlock-keychain -p "$kcpw" "$kc"
   security import "$SIGN_P12" -k "$kc" -P "$SIGN_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
