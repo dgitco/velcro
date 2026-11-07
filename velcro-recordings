@@ -19,9 +19,18 @@ Each line of <dir>/.velcro-import.jsonl is one recording. For each one, in order
      kept in <out>/<name>.deliver.txt.
 
 The hooks get VELCRO_RECORDING (the audio), VELCRO_RECORD (its import line, JSON), VELCRO_TRANSCRIPT,
-VELCRO_TRANSCRIPT_JSON, VELCRO_OUT and, for deliver, VELCRO_TIDIED. A step that fails (exit status
+VELCRO_TRANSCRIPT_JSON, VELCRO_OUT and, for deliver, VELCRO_TIDIED.
+
+Once every recording of one import (the lines that share an "import" id: one `velcro import` run) has all
+its steps done, --done <command> runs once for that import, with VELCRO_IMPORT (the id), VELCRO_RECORDS (its
+lines, a JSON list), VELCRO_RECORDINGS, VELCRO_TRANSCRIPTS and VELCRO_TRANSCRIPTS_JSON (one path per line, in
+manifest order) and VELCRO_OUT. Each of those four is also in a file named by the same variable plus _FILE
+(lists one path per line); the inline variable is left unset when it is over 64 KiB, so big imports read the
+files. It runs only when every transcript's metadata names that recording and its SHA-256.
+Its success is kept in the state, so it never runs twice for an import.
+Lines without an import id (written by an older velcro) never run it. A step that fails (exit status
 not 0, or a timeout) is tried again after 10, 20, 40 ... minutes (at most 6 hours); from the third
-failure on, --alert <command> runs with one line of text last, at most once a day per file and step.
+failure on, --alert <command> runs with one line of text last, at most once a day per file (or import) and step.
 Nothing is ever deleted or changed in <dir>. One run at a time per <out> (a lock in <state>).
 File variables are private copies (0600, in a 0700 temporary folder), removed after each hook;
 the audio is copied and hash-checked again. VELCRO_OUT remains the output folder.
@@ -49,6 +58,8 @@ BACKOFF_S, BACKOFF_MAX_S = 600, 6 * 3600
 ALERT_FROM = 3
 HOOK_TIMEOUT_S = 1800
 STEPS = ('transcribe', 'tidy', 'deliver')
+INLINE_MAX = 64 * 1024  # bytes per inline hook variable; beyond it only the *_FILE variable is set
+DONE_KEY = 'import {}'  # an import's key in the failure counts, next to the file names
 TRANSCRIBE = ('claude', 'codex')  # engines velcro transcribe runs
 
 
@@ -208,16 +219,24 @@ class Run:
     # ---- what to do ----
 
     def records(self):
+        self.record_errors = []
+        self.registered = set()
         index = self.dir / MANIFEST
         if not index.exists():
+            self.record_errors.append({'stage': 'manifest missing'})
             return []
         recs = []
         for line in index.read_text().splitlines():
             try:
                 r = json.loads(line)
             except ValueError:
+                self.record_errors.append({'stage': 'invalid manifest line'})
                 continue
-            if isinstance(r, dict) and r.get('file') and str(r.get('imported_at', '')) >= (self.a.since or ''):
+            if not isinstance(r, dict) or not isinstance(r.get('file'), str) or not r['file']:
+                self.record_errors.append({'stage': 'invalid manifest record'})
+                continue
+            self.registered.add(unicodedata.normalize('NFC', r['file']))
+            if str(r.get('imported_at', '')) >= (self.a.since or ''):
                 recs.append(r)
         # A Mac writes decomposed Hangul; the share may keep the composed name. Take the actual spelling
         # only when exactly one file matches.
@@ -235,7 +254,9 @@ class Run:
                 # The folder may be a share others write to: an absolute path, ../ or a link leading out of it
                 # would have the engine read (and the transcript show) a file of this account's. This only
                 # skips them early; copy_in() is what keeps a link swapped in later out.
-                say(f"{r['file']}: outside {self.dir}, skipped")
+                self.record_errors.append({'file': r['file'], 'stage': 'outside recordings folder'})
+                if self.a.command != 'check':
+                    say(f"{r['file']}: outside {self.dir}, skipped")
                 continue
             latest[r['file']] = r
         return list(latest.values())
@@ -380,6 +401,18 @@ class Run:
         with tempfile.TemporaryDirectory(prefix='velcro-rec-', dir=self.state_dir) as work:
             return self.hook_in(rec, step, Path(work))
 
+    def copy_out(self, out, path, work):
+        """A private 0600 copy in work of an output-folder file, opened without following links."""
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=out)
+        copy = work / path.name
+        with os.fdopen(fd, 'rb') as source:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise RuntimeError(f'{path}: not a regular file')
+            with os.fdopen(os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as dest:
+                for b in iter(lambda: source.read(1 << 20), b''):
+                    dest.write(b)
+        return copy
+
     def hook_in(self, rec, step, work):
         p = self.paths(rec)
         audio, got = self.copy_in(rec, p['audio'], work)
@@ -393,20 +426,12 @@ class Run:
                 if key == 'tidy' and step != 'deliver':
                     continue
                 try:
-                    fd = os.open(p[key].name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=out)
+                    env[var] = str(self.copy_out(out, p[key], work))
                 except FileNotFoundError:
                     if key == 'tidy' and not self.a.tidy:
                         env[var] = ''
                         continue
                     raise
-                copy = work / p[key].name
-                with os.fdopen(fd, 'rb') as source:
-                    if not stat.S_ISREG(os.fstat(fd).st_mode):
-                        raise RuntimeError(f'{p[key]}: not a regular file')
-                    with os.fdopen(os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as dest:
-                        for b in iter(lambda: source.read(1 << 20), b''):
-                            dest.write(b)
-                env[var] = str(copy)
         finally:
             os.close(out)
         argv, _ = command(getattr(self.a, step))
@@ -423,9 +448,94 @@ class Run:
             os.close(out)
         return f'{step} ok'
 
+    def import_groups(self, recs):
+        groups = {}
+        for rec in recs:
+            if isinstance(rec.get('import'), str) and rec['import']:
+                groups.setdefault(rec['import'], []).append(rec)
+        return groups
+
+    def revision(self, recs):
+        members = sorted((r['file'], r.get('sha256')) for r in recs)
+        return hashlib.sha256(json.dumps(members, ensure_ascii=False).encode()).hexdigest()
+
+    def import_finished(self, imp, recs):
+        saved = self.state.get('imports', {}).get(imp)
+        return isinstance(saved, dict) and saved.get('revision') == self.revision(recs)
+
+    def imports(self, recs):
+        """Ready imports whose current set of recordings has not been handed on."""
+        groups = self.import_groups(recs)
+        return {i: g for i, g in groups.items()
+                if not self.import_finished(i, g) and all(self.next_step(r)[1] == 'done' for r in g)}
+
+    def waiting(self, imp):
+        """When the done hook of this import failed and its next try is still ahead: a line saying so, else None."""
+        f = self.state.get('failures', {}).get(DONE_KEY.format(imp))
+        if f and f.get('next', 0) > time.time():
+            return f'done (try {f["count"] + 1} after {time.strftime("%m-%d %H:%M", time.localtime(f["next"]))})'
+        return None
+
+    def done(self, imp, recs):
+        # Same rule as tidy/deliver: the hook gets private copies, never paths on the share.
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='velcro-rec-', dir=self.state_dir) as work:
+            return self.done_in(imp, recs, Path(work))
+
+    def done_in(self, imp, recs, work):
+        audios, txts, jsons = [], [], []
+        for i, rec in enumerate(recs):
+            own = work / str(i)  # one folder per recording: names may repeat across folders
+            own.mkdir(mode=0o700)
+            p = self.paths(rec)
+            audio, got = self.copy_in(rec, p['audio'], own)
+            if rec.get('sha256') and got != rec['sha256']:
+                raise RuntimeError(f"{rec['file']}: SHA-256 doesn't match the import record")
+            audios.append(str(audio))
+            out = self.open_out()
+            try:
+                txt, doc = self.copy_out(out, p['txt'], own), self.copy_out(out, p['json'], own)
+            finally:
+                os.close(out)
+            # The same test as `check`, on the copies: a transcript left from an older recording with the same
+            # name must not be handed on as this one's.
+            try:
+                meta = json.loads(doc.read_text())
+            except ValueError:
+                meta = None
+            if (not isinstance(meta, dict)
+                    or unicodedata.normalize('NFC', meta.get('file') or '') != unicodedata.normalize('NFC', rec['file'])
+                    or meta.get('sha256') != rec.get('sha256') or txt.stat().st_size == 0):
+                raise RuntimeError(f"{rec['file']}: its transcript is missing or belongs to another recording")
+            txts.append(str(txt))
+            jsons.append(str(doc))
+        # Lists and the import's lines also go in private files: a big import would not fit in the environment
+        # (Linux refuses one variable over 128 KiB). The inline variables are set only when they fit.
+        values = {'VELCRO_RECORDS': json.dumps(recs, ensure_ascii=False), 'VELCRO_RECORDINGS': '\n'.join(audios),
+                  'VELCRO_TRANSCRIPTS': '\n'.join(txts), 'VELCRO_TRANSCRIPTS_JSON': '\n'.join(jsons)}
+        env = dict(os.environ, VELCRO_IMPORT=imp, VELCRO_IMPORT_REVISION=self.revision(recs), VELCRO_OUT=str(self.out))
+        for var, value in values.items():
+            f = work / f'{var.lower()}.txt'
+            with os.fdopen(os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w', encoding='utf-8') as w:
+                w.write(value if var == 'VELCRO_RECORDS' or not value else value + '\n')  # lists: one line each
+            env[var + '_FILE'] = str(f)
+            if len(value.encode()) <= INLINE_MAX:
+                env[var] = value
+            else:
+                env.pop(var, None)
+        argv, _ = command(self.a.done)
+        try:
+            r = run_limited(argv, HOOK_TIMEOUT_S, env)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f'done took over {HOOK_TIMEOUT_S // 60} min, stopped')
+        if r.returncode:
+            raise RuntimeError(f'done failed (exit {r.returncode}): {(r.stderr or r.stdout).strip()[-300:]}')
+        return f'done ok ({len(recs)} recording{"" if len(recs) == 1 else "s"})'
+
     # ---- failures ----
 
     def failed(self, rec, step, err):
+        """Count a failure of rec's step; rec is an import line, or {'file': DONE_KEY} for an import's done hook."""
         f = self.state.setdefault('failures', {}).get(rec['file'])
         if not f or f.get('step') != step:
             f = {'count': 0}
@@ -454,6 +564,54 @@ class Run:
 
     # ---- commands ----
 
+    def check(self):
+        """Read-only reconciliation for a timer: gaps are exit 1, never 'nothing new'."""
+        recs = self.records()
+        issues = list(self.record_errors)
+        configured = {k: bool(getattr(self.a, k)) for k in ('engine', 'tidy', 'deliver', 'done')}
+        if not configured['engine']:
+            issues.append({'stage': 'engine not configured'})
+        for required in self.a.require:
+            if not configured[required]:
+                issues.append({'stage': f'{required} not configured'})
+        # registered includes older lines excluded by since: those files are not orphan audio.
+        unregistered = [p.name for p in self.dir.iterdir()
+                        if p.is_file() and not p.name.startswith('.')
+                        and p.suffix.lower().lstrip('.') in self.a.ext.split()
+                        and unicodedata.normalize('NFC', p.name) not in self.registered]
+        issues.extend({'file': n, 'stage': 'not in manifest'} for n in sorted(unregistered))
+        complete = 0
+        for rec in recs:
+            if 'done' in self.a.require and not (isinstance(rec.get('import'), str) and rec['import']):
+                issues.append({'file': rec['file'], 'stage': 'import id missing for done hook'})
+            _, stage = self.next_step(rec)
+            if stage == 'done':
+                p = self.paths(rec)
+                try:
+                    doc = json.loads(read_small(p['json']))
+                    text_stat = p['txt'].lstat()
+                    valid = (isinstance(doc, dict)
+                             and unicodedata.normalize('NFC', doc.get('file') or '') == unicodedata.normalize('NFC', rec['file'])
+                             and doc.get('sha256') == rec.get('sha256')
+                             and stat.S_ISREG(text_stat.st_mode) and text_stat.st_size > 0)
+                except (ValueError, TypeError, OSError):
+                    valid = False
+                if not valid:
+                    stage = 'transcript missing or mismatched'
+            if stage == 'done':
+                complete += 1
+            else:
+                issues.append({'file': rec['file'], 'stage': stage})
+        if configured['done']:
+            for imp, group in self.import_groups(recs).items():
+                if not self.import_finished(imp, group):
+                    issues.append({'import': imp, 'stage': self.waiting(imp) or 'done hook pending'})
+        report = {'ok': not issues, 'at': now_iso(), 'configured': configured,
+                  'counts': {'recordings': len(recs), 'complete': complete,
+                             'pending': len(recs) - complete, 'unregistered': len(unregistered)}, 'issues': issues}
+        print(json.dumps(report, ensure_ascii=False))
+        return 0 if report['ok'] else 1
+
     def status(self):
         recs = self.records()
         if not recs:
@@ -461,6 +619,9 @@ class Run:
         for rec in recs:
             _, what = self.next_step(rec)
             print(f"{rec['file']:28} {what}")
+        if self.a.done:
+            for imp in self.imports(recs):
+                print(f"{DONE_KEY.format(imp):28} {self.waiting(imp) or 'done hook'}")
         return 0
 
     def run(self):
@@ -496,6 +657,23 @@ class Run:
                 self.state.setdefault('done', {}).setdefault(rec['file'], {})[step] = now_iso()
                 self.save()
                 say(f"{rec['file']}: {msg}")
+        if self.a.done:
+            for imp, recs in self.imports(self.records()).items():
+                if self.waiting(imp):
+                    continue
+                if time.time() - started > self.a.budget:
+                    say('run budget used, the rest waits for the next run')
+                    return 0
+                worked, key = True, DONE_KEY.format(imp)
+                try:
+                    msg = self.done(imp, recs)
+                except Exception as e:
+                    self.failed({'file': key}, 'done', e)
+                    continue
+                self.state.get('failures', {}).pop(key, None)
+                self.state.setdefault('imports', {})[imp] = {'at': now_iso(), 'revision': self.revision(recs)}
+                self.save()
+                say(f'{key}: {msg}')
         if not worked:
             say('nothing new')
         return 0
@@ -507,15 +685,19 @@ def now_iso():
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog='velcro-recordings', description='Transcribe, tidy and deliver imported recordings.')
-    p.add_argument('command', choices=('run', 'status'))
+    p.add_argument('command', choices=('run', 'status', 'check'))
     p.add_argument('--dir', required=True, help='the folder velcro import writes to (with .velcro-import.jsonl)')
     p.add_argument('--out', required=True, help='where transcripts and hook output go')
     p.add_argument('--state', required=True, help='folder for the failure counts and the lock')
     p.add_argument('--engine', required=True, help='a command line ({file}, {json}), or claude or codex')
+    p.add_argument('--require', action='append', choices=('tidy', 'deliver', 'done'), default=[],
+                   help='check: fail if this hook is not configured (repeatable)')
+    p.add_argument('--ext', default='wav mp3 m4a aac flac wma ogg', help='audio extensions checked against the manifest')
     p.add_argument('--velcro', default='velcro', help='the velcro command, for --engine claude or codex')
     p.add_argument('--lang', default='', help='language for --engine claude or codex, e.g. ko')
     p.add_argument('--tidy', default='', help='command run after transcribing')
     p.add_argument('--deliver', default='', help='command run after tidying')
+    p.add_argument('--done', default='', help='command run once per import, when all its recordings are done')
     p.add_argument('--alert', default='', help='command run with a line of text from the third failure on')
     p.add_argument('--since', default='', help='only recordings imported at or after this time (2026-10-21T00:00)')
     p.add_argument('--timeout', type=lambda v: float(v) if v else 0, default=0,
@@ -526,7 +708,7 @@ def main(argv=None):
         print(f'velcro-recordings: no such folder: {a.dir}', file=sys.stderr)
         return 2
     r = Run(a)
-    return r.run() if a.command == 'run' else r.status()
+    return r.run() if a.command == 'run' else r.check() if a.command == 'check' else r.status()
 
 
 if __name__ == '__main__':
