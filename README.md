@@ -179,6 +179,7 @@ velcro set recordings.dir /mnt/nas/me/recordings       # the folder velcro impor
 velcro set recordings.engine "whisper-cli -nt -f"      # required; or claude or codex: velcro transcribe, your login
 velcro set recordings.tidy ~/bin/tidy-recording        # optional
 velcro set recordings.deliver ~/bin/deliver-recording  # optional
+velcro set recordings.done ~/bin/import-done           # optional: once per import, when all of it is done
 velcro recordings                                      # what is waiting, and why
 velcro recordings run                                  # do it now (a timer runs this)
 ```
@@ -187,7 +188,9 @@ velcro recordings run                                  # do it now (a timer runs
 - **Where things go.** `<recordings.out>/<name>.txt` and `<name>.json` (default `recordings.out`: `_velcro` inside the folder). The JSON is written last and marks the recording transcribed. Nothing in the recordings folder is changed or deleted.
 - **Hooks.** The tidy and deliver commands run with `VELCRO_RECORDING` (the audio), `VELCRO_RECORD` (its line from the import, JSON), `VELCRO_TRANSCRIPT`, `VELCRO_TRANSCRIPT_JSON` and `VELCRO_OUT`; deliver also gets `VELCRO_TIDIED`, what tidy printed. What each prints is kept as `<name>.tidy.txt` and `<name>.deliver.txt`; exit status 0 means done.
   File variables point to private copies (0600 files in a 0700 temporary folder), removed after each hook; the audio is copied and checked against the import hash again. `VELCRO_OUT` remains the output folder, so hooks should read the supplied file variables rather than construct paths there.
-- **Failures.** A step that fails is tried again after 10, 20, 40 minutes and so on, at most 6 hours apart, without redoing the steps before it. From the third failure, `recordings.alert` (a command) runs with one line of text, at most once a day per file and step. Other recordings carry on meanwhile.
+- **Once per import.** `velcro import` gives every line it writes in one run (one recorder plug-in, or one `velcro import --files`) the same `import` id; a recording kept on the Mac until the share is attached keeps the id of the run that copied it. When every recording of an import has all its steps done (transcribed, then tidied and delivered if those are set), `recordings.done` runs once for that import, with `VELCRO_IMPORT` (the id), `VELCRO_RECORDS` (its lines, a JSON list), `VELCRO_RECORDINGS`, `VELCRO_TRANSCRIPTS` and `VELCRO_TRANSCRIPTS_JSON` (one path per line, in import order) and `VELCRO_OUT`. Use it when one meeting spans several recordings. Exit status 0 is kept with a fingerprint of the import’s current filenames and hashes. If a later queue flush adds a recording, the hook runs again with the full updated group; `VELCRO_IMPORT_REVISION` identifies that group revision, so receivers can deduplicate retries. Old timestamp-only completions are reconciled once after upgrading; a failure is retried like the other steps. A recording whose file is gone holds its import back; lines from before this version have no id and never run it.
+- **Reconcile the whole handoff.** `velcro recordings check --require tidy --require deliver --require done` prints one JSON report and exits 1 for missing configuration, missing/corrupt manifest, unregistered audio, unfinished per-file steps or a pending import hook. It checks transcript metadata and a nonempty regular text file, rather than comparing counts. Omit a `--require` only when that stage is intentionally unused. This reads no audio and runs no engines or hooks. Run it from an independent timer, and route a nonzero exit (including exit 2 for an unavailable directory) to your monitor. A successful hook is an acknowledgment by your command; it must exit nonzero until the downstream receiver accepts the work. It does not prove that downstream notes or questions were completed. See [handoff recovery](docs/recordings-recovery.md).
+- **Failures.** A step that fails is tried again after 10, 20, 40 minutes and so on, at most 6 hours apart, without redoing the steps before it. From the third failure, `recordings.alert` (a command) runs with one line of text, at most once a day per file (or import) and step. Other recordings carry on meanwhile.
 - One run at a time; a run starts no new step after 40 minutes, the next run picks up. `recordings.since` skips everything imported before a date, so a new setup doesn't redo old recordings.
 
 ## Settings
@@ -220,6 +223,7 @@ velcro recordings run                                  # do it now (a timer runs
 | `recordings.engine` | | a command line that prints the text (`{file}`, `{json}`), or `claude` or `codex`; required |
 | `recordings.tidy` | | command run after transcribing |
 | `recordings.deliver` | | command run after tidying |
+| `recordings.done` | | command run once per import, when every recording it brought in is done |
 | `recordings.alert` | | command run with one line of text from a step's third failure on |
 | `recordings.since` | | only recordings imported at or after this date or time |
 | `recordings.timeout` | 1800 s + half the recording | seconds the engine may take; raise it if your engine first waits for a busy GPU |
