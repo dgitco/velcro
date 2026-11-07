@@ -622,6 +622,8 @@ put_verified() {
   base=${name%.*} ext=${name:e}
   [[ $name == .* || $base == "$name" ]] && { base=$name ext=; }
   while [[ -e $dir/$name ]]; do
+    # The file itself (a recording already in the destination): never its own verified copy, so never deleted.
+    [[ $dir/$name -ef $src ]] && { log "import: $src is in $dir already; not imported"; return 1; }
     if [[ $(size_of "$dir/$name") == $size ]]; then
       [[ -n $want ]] || { progress hashing; want=$(sha256 "$src") } || return 1
       progress verifying $size
@@ -718,6 +720,12 @@ import_recordings() {
     local alt; alt=$(renamed_mount "$dest") &&
       notify "Recordings are waiting on this Mac: ${dest} isn't attached, but ${alt} is. If that's the same share, set import.dest to ${dest/#${alt%-*}/$alt}"
   else notify "Can't use $dest for recordings: ${dest:h} doesn't exist"; return 1
+  fi
+  # A drive that holds the destination (or the queue) is never read as a recorder: the backups would be taken
+  # for copies of themselves and deleted.
+  if [[ -n $mp ]] && { [[ ${dest:A}/ == "${mp:A}"/* ]] || [[ ${dir:A}/ == "${mp:A}"/* ]]; }; then
+    notify "$device holds the recordings folder ($dest), so it isn't imported as a recorder. Nothing was copied or deleted."
+    return 1
   fi
   log "import: ${#files} file(s) from $device → $dir"
 

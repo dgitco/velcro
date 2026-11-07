@@ -956,6 +956,27 @@ class ShareTrust(Base):
         self.assertEqual(stat.S_IMODE((self.out / source.name).stat().st_mode), 0o600)
 
 
+    @unittest.skipUnless(shutil.which('zsh'), 'velcro import needs zsh')
+    def test_a_recording_is_never_its_own_copy(self):
+        # A recorder drive that holds the destination: each backup would look like its own verified copy and be
+        # deleted with the recorder's originals. put_verified must refuse the file itself.
+        self.out.mkdir()
+        source = self.out / 'a.WAV'
+        source.write_bytes(b'RIFFaudio')
+        body = (ROOT / 'velcro').read_text().split('put_verified() {', 1)[1].split('\n}\n', 1)[0]
+        code = ('setopt pipe_fail\nzmodload zsh/zselect\numask 022\n'
+                'size_of() { wc -c < "$1" | tr -d " "; }\n'
+                f'mktemp() {{ command mktemp {shlex.quote(str(self.tmp / "sum.XXXXXX"))}; }}\n'
+                'sha256() { /usr/bin/openssl dgst -sha256 -r < "$1" | cut -d " " -f1; }\n'
+                'progress() { :; }\nlog() { print -u2 -- "$*"; }\nLOG=/dev/null\n'
+                'put_verified() {' + body + '\n}\n'
+                f'put_verified {shlex.quote(str(source))} {shlex.quote(str(self.out))} ""\n')
+        result = subprocess.run(['zsh', '-c', code], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(source.read_bytes(), b'RIFFaudio')
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), ['a.WAV'])
+
+
 class Reliability(Base):
     """Restarts, overlapping runs and look-alike names must not lose a recording or its retry schedule."""
 
