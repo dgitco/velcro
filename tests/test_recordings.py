@@ -286,6 +286,35 @@ class Done(Base):
         self.assertIn('import imp-1', self.state_doc()['failures'])
         self.assertEqual(secret.read_text(), 'not for the hook')
 
+    def test_a_transcript_left_from_an_older_recording_is_not_handed_on(self):
+        self.add('memo.WAV', **{'import': 'imp-1'})
+        self.run_helper()
+        # Same name, but the transcript's metadata says it is of other audio (an older memo.WAV).
+        doc = json.loads((self.out / 'memo.json').read_text())
+        doc['sha256'] = '0' * 64
+        (self.out / 'memo.json').write_text(json.dumps(doc))
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), [])
+        self.assertIn('another recording', self.state_doc()['failures']['import imp-1']['error'])
+
+    def test_a_big_import_goes_in_files_when_it_does_not_fit_the_environment(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        self.add('b.WAV', **{'import': 'imp-1'})
+        seen = self.tmp / 'seen-files'
+        done = script(self.bin / 'done-files', f'echo "$VELCRO_IMPORT" >> {self.tmp / "done.calls"}\n'
+                      f'printf "%s" "${{VELCRO_RECORDS-unset}}" > {seen}.inline\n'
+                      f'cat "$VELCRO_RECORDS_FILE" > {seen}.records\n'
+                      f'cat "$VELCRO_TRANSCRIPTS_FILE" | while IFS= read -r f; do cat "$f"; done > {seen}.texts\n')
+        self.calls = self.tmp / 'done.calls'
+        with mock.patch.object(vr, 'INLINE_MAX', 10):
+            self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1'])
+        self.assertEqual(Path(f'{seen}.inline').read_text(), 'unset')
+        self.assertEqual([r['file'] for r in json.loads(Path(f'{seen}.records').read_text())], ['a.WAV', 'b.WAV'])
+        self.assertEqual(Path(f'{seen}.texts').read_text(),
+                         (self.out / 'a.txt').read_text() + (self.out / 'b.txt').read_text())
+
     def test_runs_once_when_every_recording_of_the_import_is_done(self):
         self.add('a.WAV', **{'import': 'imp-1'})
         self.add('b.WAV', **{'import': 'imp-1'})
