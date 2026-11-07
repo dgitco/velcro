@@ -397,6 +397,18 @@ class Run:
         with tempfile.TemporaryDirectory(prefix='velcro-rec-', dir=self.state_dir) as work:
             return self.hook_in(rec, step, Path(work))
 
+    def copy_out(self, out, path, work):
+        """A private 0600 copy in work of an output-folder file, opened without following links."""
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=out)
+        copy = work / path.name
+        with os.fdopen(fd, 'rb') as source:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise RuntimeError(f'{path}: not a regular file')
+            with os.fdopen(os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as dest:
+                for b in iter(lambda: source.read(1 << 20), b''):
+                    dest.write(b)
+        return copy
+
     def hook_in(self, rec, step, work):
         p = self.paths(rec)
         audio, got = self.copy_in(rec, p['audio'], work)
@@ -410,20 +422,12 @@ class Run:
                 if key == 'tidy' and step != 'deliver':
                     continue
                 try:
-                    fd = os.open(p[key].name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=out)
+                    env[var] = str(self.copy_out(out, p[key], work))
                 except FileNotFoundError:
                     if key == 'tidy' and not self.a.tidy:
                         env[var] = ''
                         continue
                     raise
-                copy = work / p[key].name
-                with os.fdopen(fd, 'rb') as source:
-                    if not stat.S_ISREG(os.fstat(fd).st_mode):
-                        raise RuntimeError(f'{p[key]}: not a regular file')
-                    with os.fdopen(os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as dest:
-                        for b in iter(lambda: source.read(1 << 20), b''):
-                            dest.write(b)
-                env[var] = str(copy)
         finally:
             os.close(out)
         argv, _ = command(getattr(self.a, step))
@@ -469,12 +473,31 @@ class Run:
         return None
 
     def done(self, imp, recs):
-        ps = [self.paths(r) for r in recs]
+        # Same rule as tidy/deliver: the hook gets private copies, never paths on the share.
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='velcro-rec-', dir=self.state_dir) as work:
+            return self.done_in(imp, recs, Path(work))
+
+    def done_in(self, imp, recs, work):
+        audios, txts, jsons = [], [], []
+        for i, rec in enumerate(recs):
+            own = work / str(i)  # one folder per recording: names may repeat across folders
+            own.mkdir(mode=0o700)
+            p = self.paths(rec)
+            audio, got = self.copy_in(rec, p['audio'], own)
+            if rec.get('sha256') and got != rec['sha256']:
+                raise RuntimeError(f"{rec['file']}: SHA-256 doesn't match the import record")
+            audios.append(str(audio))
+            out = self.open_out()
+            try:
+                txts.append(str(self.copy_out(out, p['txt'], own)))
+                jsons.append(str(self.copy_out(out, p['json'], own)))
+            finally:
+                os.close(out)
         env = dict(os.environ, VELCRO_IMPORT=imp, VELCRO_RECORDS=json.dumps(recs, ensure_ascii=False),
                    VELCRO_IMPORT_REVISION=self.revision(recs),
-                   VELCRO_RECORDINGS='\n'.join(str(p['audio']) for p in ps),
-                   VELCRO_TRANSCRIPTS='\n'.join(str(p['txt']) for p in ps),
-                   VELCRO_TRANSCRIPTS_JSON='\n'.join(str(p['json']) for p in ps), VELCRO_OUT=str(self.out))
+                   VELCRO_RECORDINGS='\n'.join(audios), VELCRO_TRANSCRIPTS='\n'.join(txts),
+                   VELCRO_TRANSCRIPTS_JSON='\n'.join(jsons), VELCRO_OUT=str(self.out))
         argv, _ = command(self.a.done)
         try:
             r = run_limited(argv, HOOK_TIMEOUT_S, env)

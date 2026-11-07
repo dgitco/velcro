@@ -1279,7 +1279,7 @@ settings ($SETTINGS):
                        each hook; audio is copied and hash-checked again. VELCRO_OUT is the output folder.
   recordings.done      command run once per import, when every recording it brought in is done,
                        with VELCRO_IMPORT, VELCRO_RECORDS, VELCRO_RECORDINGS, VELCRO_TRANSCRIPTS,
-                       VELCRO_TRANSCRIPTS_JSON (one path per line) and VELCRO_OUT
+                       VELCRO_TRANSCRIPTS_JSON (one path per line, private copies) and VELCRO_OUT
   recordings.alert     command run with one line of text when a step fails a 3rd time (once a day)
   recordings.since     only recordings imported at or after this time, e.g. 2026-10-21
   recordings.timeout   seconds the engine may take before it is stopped (1800 + half the length);

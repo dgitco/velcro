@@ -259,7 +259,9 @@ class Done(Base):
                       f'printf "%s" "$VELCRO_RECORDINGS" > {seen}/"$VELCRO_IMPORT".recordings\n'
                       f'printf "%s" "$VELCRO_TRANSCRIPTS" > {seen}/"$VELCRO_IMPORT".transcripts\n'
                       f'printf "%s" "$VELCRO_TRANSCRIPTS_JSON" > {seen}/"$VELCRO_IMPORT".json\n'
-                      f'printf "%s" "$VELCRO_RECORDS" > {seen}/"$VELCRO_IMPORT".records\n')
+                      f'printf "%s" "$VELCRO_RECORDS" > {seen}/"$VELCRO_IMPORT".records\n'
+                      f'printf "%s\\n" "$VELCRO_TRANSCRIPTS" | while IFS= read -r f; do cat "$f"; done'
+                      f' > {seen}/"$VELCRO_IMPORT".texts\n')
 
     def calls_made(self):
         return self.calls.read_text().splitlines() if self.calls.exists() else []
@@ -270,6 +272,19 @@ class Done(Base):
     def after_retry(self, key):
         """time.time() just past the retry time of key's failure."""
         return mock.patch.object(vr.time, 'time', return_value=self.state_doc()['failures'][key]['next'] + 1)
+
+    def test_a_transcript_link_planted_before_the_hook_is_not_handed_on(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        self.run_helper()  # transcribed; no done hook yet
+        secret = self.tmp / 'secret.txt'
+        secret.write_text('not for the hook')
+        (self.out / 'a.txt').unlink()
+        (self.out / 'a.txt').symlink_to(secret)
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), [])
+        self.assertIn('import imp-1', self.state_doc()['failures'])
+        self.assertEqual(secret.read_text(), 'not for the hook')
 
     def test_runs_once_when_every_recording_of_the_import_is_done(self):
         self.add('a.WAV', **{'import': 'imp-1'})
@@ -286,9 +301,15 @@ class Done(Base):
         with self.after_retry('b.WAV'):
             self.run_helper('--done', done)
         self.assertEqual(self.calls_made(), ['imp-2', 'imp-1'])
-        self.assertEqual(self.seen('imp-1', 'recordings').split('\n'), [str(self.dir / 'a.WAV'), str(self.dir / 'b.WAV')])
-        self.assertEqual(self.seen('imp-1', 'transcripts').split('\n'), [str(self.out / 'a.txt'), str(self.out / 'b.txt')])
-        self.assertEqual(self.seen('imp-1', 'json').split('\n'), [str(self.out / 'a.json'), str(self.out / 'b.json')])
+        # Private copies like the other hooks get (never paths on the share), in import order.
+        for what, names in (('recordings', ['a.WAV', 'b.WAV']), ('transcripts', ['a.txt', 'b.txt']),
+                            ('json', ['a.json', 'b.json'])):
+            got = self.seen('imp-1', what).split('\n')
+            self.assertEqual([Path(g).name for g in got], names)
+            for g in got:
+                self.assertFalse(g.startswith(str(self.dir)) or g.startswith(str(self.out)), g)
+        self.assertEqual(self.seen('imp-1', 'texts'),
+                         (self.out / 'a.txt').read_text() + (self.out / 'b.txt').read_text())
         self.assertEqual([r['file'] for r in json.loads(self.seen('imp-1', 'records'))], ['a.WAV', 'b.WAV'])
         self.assertEqual(set(self.state_doc()['imports']), {'imp-1', 'imp-2'})
         # Later runs call it for neither import again.
