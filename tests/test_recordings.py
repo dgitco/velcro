@@ -248,6 +248,251 @@ class Failures(Base):
             self.fail('the engine\'s child kept running')
 
 
+class Done(Base):
+    """recordings.done: once per import, after every recording that import brought in is done."""
+
+    def done_hook(self, body=''):
+        """A done command that logs the import id per call and keeps what else it got in seen/<id>.*."""
+        self.calls, seen = self.tmp / 'done.calls', self.tmp / 'seen'
+        seen.mkdir(exist_ok=True)
+        return script(self.bin / 'done', body + f'echo "$VELCRO_IMPORT" >> {self.calls}\n'
+                      f'printf "%s" "$VELCRO_RECORDINGS" > {seen}/"$VELCRO_IMPORT".recordings\n'
+                      f'printf "%s" "$VELCRO_TRANSCRIPTS" > {seen}/"$VELCRO_IMPORT".transcripts\n'
+                      f'printf "%s" "$VELCRO_TRANSCRIPTS_JSON" > {seen}/"$VELCRO_IMPORT".json\n'
+                      f'printf "%s" "$VELCRO_RECORDS" > {seen}/"$VELCRO_IMPORT".records\n'
+                      f'printf "%s\\n" "$VELCRO_TRANSCRIPTS" | while IFS= read -r f; do cat "$f"; done'
+                      f' > {seen}/"$VELCRO_IMPORT".texts\n')
+
+    def calls_made(self):
+        return self.calls.read_text().splitlines() if self.calls.exists() else []
+
+    def seen(self, imp, what):
+        return (self.tmp / 'seen' / f'{imp}.{what}').read_text()
+
+    def after_retry(self, key):
+        """time.time() just past the retry time of key's failure."""
+        return mock.patch.object(vr.time, 'time', return_value=self.state_doc()['failures'][key]['next'] + 1)
+
+    def test_a_transcript_link_planted_before_the_hook_is_not_handed_on(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        self.run_helper()  # transcribed; no done hook yet
+        secret = self.tmp / 'secret.txt'
+        secret.write_text('not for the hook')
+        (self.out / 'a.txt').unlink()
+        (self.out / 'a.txt').symlink_to(secret)
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), [])
+        self.assertIn('import imp-1', self.state_doc()['failures'])
+        self.assertEqual(secret.read_text(), 'not for the hook')
+
+    def test_a_transcript_left_from_an_older_recording_is_not_handed_on(self):
+        self.add('memo.WAV', **{'import': 'imp-1'})
+        self.run_helper()
+        # Same name, but the transcript's metadata says it is of other audio (an older memo.WAV).
+        doc = json.loads((self.out / 'memo.json').read_text())
+        doc['sha256'] = '0' * 64
+        (self.out / 'memo.json').write_text(json.dumps(doc))
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), [])
+        self.assertIn('another recording', self.state_doc()['failures']['import imp-1']['error'])
+
+    def test_a_big_import_goes_in_files_when_it_does_not_fit_the_environment(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        self.add('b.WAV', **{'import': 'imp-1'})
+        seen = self.tmp / 'seen-files'
+        done = script(self.bin / 'done-files', f'echo "$VELCRO_IMPORT" >> {self.tmp / "done.calls"}\n'
+                      f'printf "%s" "${{VELCRO_RECORDS-unset}}" > {seen}.inline\n'
+                      f'cat "$VELCRO_RECORDS_FILE" > {seen}.records\n'
+                      f'cat "$VELCRO_TRANSCRIPTS_FILE" | while IFS= read -r f; do cat "$f"; done > {seen}.texts\n')
+        self.calls = self.tmp / 'done.calls'
+        with mock.patch.object(vr, 'INLINE_MAX', 10):
+            self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1'])
+        self.assertEqual(Path(f'{seen}.inline').read_text(), 'unset')
+        self.assertEqual([r['file'] for r in json.loads(Path(f'{seen}.records').read_text())], ['a.WAV', 'b.WAV'])
+        self.assertEqual(Path(f'{seen}.texts').read_text(),
+                         (self.out / 'a.txt').read_text() + (self.out / 'b.txt').read_text())
+
+    def test_runs_once_when_every_recording_of_the_import_is_done(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        self.add('b.WAV', **{'import': 'imp-1'})
+        self.add('c.WAV', **{'import': 'imp-2'})
+        flag = self.tmp / 'b-ok'
+        self.engine = script(self.bin / 'engine-b', f'case "$1" in *b.WAV) [ -e {flag} ] || exit 1;; esac; echo "heard $1"\n')
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        # b failed to transcribe: imp-1 is not done, imp-2 is.
+        self.assertTrue((self.out / 'a.json').exists())
+        self.assertEqual(self.calls_made(), ['imp-2'])
+        flag.touch()
+        with self.after_retry('b.WAV'):
+            self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-2', 'imp-1'])
+        # Private copies like the other hooks get (never paths on the share), in import order.
+        for what, names in (('recordings', ['a.WAV', 'b.WAV']), ('transcripts', ['a.txt', 'b.txt']),
+                            ('json', ['a.json', 'b.json'])):
+            got = self.seen('imp-1', what).split('\n')
+            self.assertEqual([Path(g).name for g in got], names)
+            for g in got:
+                self.assertFalse(g.startswith(str(self.dir)) or g.startswith(str(self.out)), g)
+        self.assertEqual(self.seen('imp-1', 'texts'),
+                         (self.out / 'a.txt').read_text() + (self.out / 'b.txt').read_text())
+        self.assertEqual([r['file'] for r in json.loads(self.seen('imp-1', 'records'))], ['a.WAV', 'b.WAV'])
+        self.assertEqual(set(self.state_doc()['imports']), {'imp-1', 'imp-2'})
+        # Later runs call it for neither import again.
+        self.run_helper('--done', done)
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-2', 'imp-1'])
+
+    def test_waits_for_tidy_and_deliver_of_every_recording(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        self.add('b.WAV', **{'import': 'imp-1'})
+        done = self.done_hook()
+        tidy = script(self.bin / 'tidy', 'echo tidy\n')
+        deliver = script(self.bin / 'deliver', 'case "$VELCRO_RECORDING" in *b.WAV) exit 1;; esac; echo ok\n')
+        self.run_helper('--tidy', tidy, '--deliver', deliver, '--done', done)
+        self.assertEqual(self.calls_made(), [])
+        deliver = script(self.bin / 'deliver', 'echo ok\n')
+        with self.after_retry('b.WAV'):
+            self.run_helper('--tidy', tidy, '--deliver', deliver, '--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1'])
+
+    def test_failure_is_retried_later_and_not_before(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        flag = self.tmp / 'ok'
+        done = self.done_hook(f'[ -e {flag} ] || {{ echo not yet >&2; exit 1; }}\n')
+        self.run_helper('--done', done)
+        f = self.state_doc()['failures']['import imp-1']
+        self.assertEqual((f['step'], f['count']), ('done', 1))
+        self.assertIn('not yet', f['error'])
+        flag.touch()
+        self.run_helper('--done', done)  # its retry time hasn't come
+        self.assertEqual(self.calls_made(), [])
+        _, out = self.run_helper('--done', done, command='status')
+        self.assertIn('done (try 2 after', out)
+        with self.after_retry('import imp-1'):
+            self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1'])
+        doc = self.state_doc()
+        self.assertNotIn('import imp-1', doc.get('failures', {}))
+        self.assertIn('imp-1', doc['imports'])
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1'])
+
+    def test_lines_without_an_import_id_never_run_it(self):
+        self.add('old.WAV')
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        self.assertTrue((self.out / 'old.json').exists())
+        self.assertEqual(self.calls_made(), [])
+
+    def test_late_queued_member_runs_done_again_for_the_changed_group(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        revisions = self.tmp / 'revisions'
+        done = self.done_hook(f'echo "$VELCRO_IMPORT_REVISION" >> {revisions}\n')
+        self.run_helper('--done', done)
+        self.add('b.WAV', **{'import': 'imp-1'})  # a later queue flush, same original import
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1', 'imp-1'])
+        self.assertEqual([r['file'] for r in json.loads(self.seen('imp-1', 'records'))], ['a.WAV', 'b.WAV'])
+        self.assertEqual(len(set(revisions.read_text().splitlines())), 2)
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1', 'imp-1'])
+
+    def test_legacy_timestamp_completion_is_reconciled_once(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        state = self.state_doc()
+        state['imports']['imp-1'] = '2026-11-02T10:00:00+09:00'
+        next(self.state.glob('recordings-*.json')).write_text(json.dumps(state))
+        self.run_helper('--done', done)
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1', 'imp-1'])
+
+
+class Check(Base):
+    def check(self, *args):
+        rc, out = self.run_helper(*args, command='check')
+        return rc, json.loads(out)
+
+    def test_missing_manifest_or_unregistered_audio_is_not_healthy(self):
+        (self.dir / 'orphan.WAV').write_bytes(b'audio')
+        rc, report = self.check()
+        self.assertEqual(rc, 1)
+        self.assertFalse(report['ok'])
+        self.assertEqual(report['counts']['unregistered'], 1)
+        self.assertIn({'stage': 'manifest missing'}, report['issues'])
+        self.assertFalse(self.out.exists())
+        self.assertFalse(self.state.exists())
+
+    def test_malformed_manifest_is_reported_even_with_completed_recordings(self):
+        self.add('a.WAV')
+        self.run_helper()
+        with (self.dir / '.velcro-import.jsonl').open('a') as f:
+            f.write('{broken\n[]\n')
+        rc, report = self.check()
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['counts']['complete'], 1)
+        self.assertEqual(len(report['issues']), 2)
+
+    def test_counts_alone_do_not_hide_missing_or_failed_handoffs(self):
+        self.add('a.WAV')
+        self.add('b.WAV')
+        deliver = script(self.bin / 'deliver', 'exit 1\n')
+        self.run_helper('--deliver', deliver)
+        rc, report = self.check('--deliver', deliver)
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['counts']['pending'], 2)
+        self.assertTrue(all('deliver' in i['stage'] for i in report['issues']))
+        deliver = script(self.bin / 'deliver', 'echo acknowledged\n')
+        with mock.patch.object(vr.time, 'time', return_value=time.time() + 601):
+            self.run_helper('--deliver', deliver)
+        rc, report = self.check('--deliver', deliver)
+        self.assertEqual(rc, 0)
+        self.assertEqual(report['counts']['complete'], 2)
+
+    def test_required_hooks_and_missing_engine_cannot_look_complete(self):
+        self.add('a.WAV')
+        self.run_helper()
+        rc, report = self.check('--engine', '', '--require', 'tidy', '--require', 'deliver', '--require', 'done')
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(report['issues']), 5)  # engine, 3 hooks, old line with no import id
+
+    def test_checks_transcript_receipt_and_missing_source(self):
+        self.add('a.WAV')
+        self.run_helper()
+        (self.out / 'a.txt').unlink()
+        rc, report = self.check()
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['issues'][0]['stage'], 'transcript missing or mismatched')
+        (self.dir / 'a.WAV').unlink()
+        rc, report = self.check()
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['issues'][0]['stage'], 'source gone')
+
+    def test_done_receipt_is_required_even_after_transcription(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        done = script(self.bin / 'done', 'echo acknowledged\n')
+        self.run_helper()
+        rc, report = self.check('--done', done)
+        self.assertEqual(rc, 1)
+        self.assertEqual(report['issues'], [{'import': 'imp-1', 'stage': 'done hook pending'}])
+        self.run_helper('--done', done)
+        self.assertEqual(self.check('--done', done)[0], 0)
+        self.add('b.WAV', **{'import': 'imp-1'})
+        self.assertEqual(self.check('--done', done)[0], 1)
+
+    def test_since_does_not_misidentify_registered_older_audio_as_orphan(self):
+        self.add('old.WAV', imported_at='2026-10-20T09:00:00+09:00')
+        rc, report = self.check('--since', '2026-10-21')
+        self.assertEqual(rc, 0)
+        self.assertEqual(report['counts']['recordings'], 0)
+        self.assertEqual(report['counts']['unregistered'], 0)
+
+
 class Command(Base):
     """velcro recordings hands the settings to the helper."""
 
@@ -266,10 +511,14 @@ class Command(Base):
         r = subprocess.run(velcro + ['recordings', 'run'], env=env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.out / 's.txt').read_text(), 'heard: s.WAV\n')
-        self.assertTrue(list((home / '.local/state/velcro').glob('recordings-*.json')))
+        state = home / ('Library/Application Support/velcro' if sys.platform == 'darwin' else '.local/state/velcro')
+        self.assertTrue(list(state.glob('recordings-*.json')))
         st = subprocess.run(velcro + ['recordings'], env=env, capture_output=True, text=True)
         self.assertIn('s.WAV', st.stdout)
         self.assertIn('done', st.stdout)
+        health = subprocess.run(velcro + ['recordings', 'check', '--require', 'deliver'], env=env, capture_output=True, text=True)
+        self.assertEqual(health.returncode, 1, health.stderr)
+        self.assertIn({'stage': 'deliver not configured'}, json.loads(health.stdout)['issues'])
 
     def test_no_engine_no_run(self):
         """Bobby 2026-10-21: claude is never the recorder path's default; without an engine nothing runs."""
