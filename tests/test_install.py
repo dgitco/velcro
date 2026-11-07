@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -17,6 +18,7 @@ IMPORT_PLIST = 'Library/LaunchAgents/io.github.dgitco.velcro.import.plist'
 
 
 @unittest.skipUnless(shutil.which('zsh'), 'needs zsh')
+@unittest.skipUnless(sys.platform == 'darwin', 'velcro install is macOS-only (BSD ln -h, launchd)')
 class Install(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix='velcro-install-test-'))
