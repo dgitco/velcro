@@ -14,12 +14,45 @@ enum Setup {
     /// The first time an installed copy runs: start at login, point `velcro` into the app,
     /// and retire the LaunchAgent and SwiftBar plugin. The app's own engine is already
     /// running by then, so shares stay attached throughout.
+    ///
+    /// After an update, an installed copy whose command is already linked here runs `velcro install`
+    /// once more, so what the new version sets up (the import-on-mount agent) reaches existing setups too.
     static func firstLaunch() async {
         let defaults = UserDefaults.standard
-        guard isInstalled, !defaults.bool(forKey: "setUp") else { return }
-        defaults.set(true, forKey: "setUp")
-        try? SMAppService.mainApp.register()
+        guard isInstalled else { return }
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        if !defaults.bool(forKey: "setUp") {
+            defaults.set(true, forKey: "setUp")
+            defaults.set(version, forKey: "setUpVersion")
+            try? SMAppService.mainApp.register()
+            await linkCommand()
+            return
+        }
+        guard defaults.string(forKey: "setUpVersion") != version else { return }
+        await Store.shared.loadEnv()
+        guard commandIsLinked(Store.shared.env["BIN"]) else {
+            defaults.set(version, forKey: "setUpVersion")
+            return
+        }
         await linkCommand()
+        // Only a loaded import agent counts as set up: if launchctl failed, try again at the next launch
+        // rather than leave plug-in imports off until someone runs `velcro install` by hand.
+        if await importAgentLoaded() { defaults.set(version, forKey: "setUpVersion") }
+    }
+
+    static func importAgentLoaded() async -> Bool {
+        await withCheckedContinuation { done in
+            DispatchQueue.global(qos: .utility).async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                p.arguments = ["print", "gui/\(getuid())/io.github.dgitco.velcro.import"]
+                p.standardOutput = FileHandle.nullDevice
+                p.standardError = FileHandle.nullDevice
+                do { try p.run() } catch { return done.resume(returning: false) }
+                p.waitUntilExit()
+                done.resume(returning: p.terminationStatus == 0)
+            }
+        }
     }
 
     /// `velcro install` from inside the bundle: links ~/.local/bin/velcro here and removes the
