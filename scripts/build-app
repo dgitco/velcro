@@ -46,7 +46,7 @@ if [[ -n $SIGN_P12 ]]; then
   (( ${#kcs} )) || { print -u2 "the keychain search list is empty"; exit 1; }
   # Each step on its own: a failed restore must not skip deleting the throwaway keychain.
   trap 'security list-keychains -d user -s "${kcs[@]}" ||
-          print -u2 "put the keychain list back: security list-keychains -d user -s ${(j: :)${(q)kcs}}"
+          print -ru2 -- "put the keychain list back: security list-keychains -d user -s ${(j: :)${(@q)kcs}}"
         security delete-keychain "$kc" 2>/dev/null || true' EXIT
   security create-keychain -p "$kcpw" "$kc"
   security list-keychains -d user -s "$kc" "${kcs[@]}"
