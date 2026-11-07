@@ -29,9 +29,30 @@ enum Setup {
             return
         }
         guard defaults.string(forKey: "setUpVersion") != version else { return }
-        defaults.set(version, forKey: "setUpVersion")
         await Store.shared.loadEnv()
-        if commandIsLinked(Store.shared.env["BIN"]) { await linkCommand() }
+        guard commandIsLinked(Store.shared.env["BIN"]) else {
+            defaults.set(version, forKey: "setUpVersion")
+            return
+        }
+        await linkCommand()
+        // Only a loaded import agent counts as set up: if launchctl failed, try again at the next launch
+        // rather than leave plug-in imports off until someone runs `velcro install` by hand.
+        if await importAgentLoaded() { defaults.set(version, forKey: "setUpVersion") }
+    }
+
+    static func importAgentLoaded() async -> Bool {
+        await withCheckedContinuation { done in
+            DispatchQueue.global(qos: .utility).async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                p.arguments = ["print", "gui/\(getuid())/io.github.dgitco.velcro.import"]
+                p.standardOutput = FileHandle.nullDevice
+                p.standardError = FileHandle.nullDevice
+                do { try p.run() } catch { return done.resume(returning: false) }
+                p.waitUntilExit()
+                done.resume(returning: p.terminationStatus == 0)
+            }
+        }
     }
 
     /// `velcro install` from inside the bundle: links ~/.local/bin/velcro here and removes the
