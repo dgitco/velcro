@@ -85,6 +85,16 @@ class Base(unittest.TestCase):
 
 
 class Steps(Base):
+    def test_late_cloud_status_does_not_replace_a_new_recording(self):
+        old = self.add('meeting.wav', data=b'old', **{'import': 'old-import'})
+        new = self.add('meeting.wav', data=b'new', **{'import': 'new-import'})
+        with (self.dir / '.velcro-import.jsonl').open('a') as f:
+            f.write(json.dumps({**old, 'cloud_status': True, 'cloud': {'status': 'pending'}}) + '\n')
+        rc, _ = self.run_helper()
+        self.assertEqual(rc, 0)
+        metadata = json.loads((self.out / 'meeting.json').read_text())
+        self.assertEqual(metadata['sha256'], new['sha256'])
+
     def test_transcribe_tidy_deliver_in_order_with_hook_variables(self):
         self.add('20261020181749.WAV')
         tidy = script(self.bin / 'tidy', 'echo "tidied $(basename "$VELCRO_TRANSCRIPT")"; cat "$VELCRO_TRANSCRIPT"\n'

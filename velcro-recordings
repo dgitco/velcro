@@ -235,6 +235,10 @@ class Run:
             if not isinstance(r, dict) or not isinstance(r.get('file'), str) or not r['file']:
                 self.record_errors.append({'stage': 'invalid manifest record'})
                 continue
+            # Cloud progress is append-only so concurrent importers never lose rows. It is not a
+            # new import: a late update for an older hash must not replace a reused filename.
+            if r.get('cloud_status') is True:
+                continue
             self.registered.add(unicodedata.normalize('NFC', r['file']))
             if str(r.get('imported_at', '')) >= (self.a.since or ''):
                 recs.append(r)
