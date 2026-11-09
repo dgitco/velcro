@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { reset } from 'cloudflare:test';
 import worker from '../src/index';
 import { hex, type Env } from '../src/common';
-import { PART_SIZE } from '../src/transport';
+import { PART_SIZE, MultipartTransport } from '../src/transport';
 const bindings = env as unknown as Env;
 function zeros(size: number) {
   let remaining = size;
@@ -45,3 +45,15 @@ it('streams two R2 parts across the 50 MiB boundary without buffering the record
   const list = await bindings.RECORDINGS.list();
   expect(list.objects).toHaveLength(1); expect(list.objects[0].size).toBe(size);
 }, 15000);
+
+it('uploads unknown-length input streams through the declared-size transport contract', async () => {
+  const bytes = new Uint8Array(16);
+  const stream = () => new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } });
+  const transport = new MultipartTransport(bindings.RECORDINGS);
+  const session = await transport.create('known-length-contract.wav', 'a'.repeat(64));
+  await expect(bindings.RECORDINGS.resumeMultipartUpload(session.key, session.uploadId).uploadPart(1, stream())).rejects.toThrow();
+  const part = await transport.put(session, 1, stream(), bytes.length);
+  expect(part.partNumber).toBe(1);
+  await transport.complete(session, [part]);
+  expect((await bindings.RECORDINGS.head(session.key))!.size).toBe(bytes.length);
+});

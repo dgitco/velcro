@@ -15,10 +15,17 @@ export class MultipartTransport implements UploadTransport {
   async put(session: UploadSession, part: number, bytes: ReadableStream, size: number): Promise<R2UploadedPart> {
     // Incoming HTTP/2 bodies do not always carry a known-length stream into R2.
     const fixed = new FixedLengthStream(size);
-    const sending = bytes.pipeTo(fixed.writable);
+    const controller = new AbortController();
+    const sending = bytes.pipeTo(fixed.writable, { signal: controller.signal });
     const storing = this.bucket.resumeMultipartUpload(session.key, session.uploadId).uploadPart(part, fixed.readable);
-    const [, uploaded] = await Promise.all([sending, storing]);
-    return uploaded;
+    try {
+      const [, uploaded] = await Promise.all([sending, storing]);
+      return uploaded;
+    } catch (error) {
+      controller.abort(error);
+      await Promise.allSettled([sending, storing]);
+      throw error;
+    }
   }
   async complete(session: UploadSession, parts: R2UploadedPart[]): Promise<void> {
     await this.bucket.resumeMultipartUpload(session.key, session.uploadId).complete(parts);
