@@ -26,21 +26,13 @@ export async function deviceOwner(request: Request, env: Env): Promise<string> {
   if (cached && cached.expires > Date.now()) return cached.owner;
   let response: Response;
   try {
-    const url = new URL('/api/device/me', base);
-    const init = {
+    response = await fetch(new URL('/api/device/me', base), {
       headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'velcro-cloud/1' },
-      redirect: 'manual' as const, signal: AbortSignal.timeout(10_000),
-    };
-    response = env.BOARDER ? await env.BOARDER.fetch(new Request(url, init)) : await fetch(url, init);
-  } catch {
-    console.warn('device_authority_fetch_failed');
-    throw new HttpError(503, 'identity_unavailable');
-  }
+      redirect: 'error', signal: AbortSignal.timeout(10_000),
+    });
+  } catch { throw new HttpError(503, 'identity_unavailable'); }
   if (response.status === 401 || response.status === 403) throw new HttpError(401, 'invalid_device_token');
-  if (!response.ok) {
-    console.warn('device_authority_unavailable', response.status);
-    throw new HttpError(503, 'identity_unavailable');
-  }
+  if (!response.ok) throw new HttpError(503, 'identity_unavailable');
   const me = JSON.parse(await readText(response.body, 8192));
   if (typeof me.email !== 'string' || !me.email.trim() ||
       !(me.scope === 'full' || (me.scope === 'watch' && me.owner === true))) {
