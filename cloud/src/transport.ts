@@ -3,7 +3,7 @@ export const PART_SIZE = 50 * 1024 * 1024;
 export interface UploadSession { key: string; uploadId: string }
 export interface UploadTransport {
   create(key: string, sha256: string): Promise<UploadSession>;
-  put(session: UploadSession, part: number, bytes: ReadableStream): Promise<R2UploadedPart>;
+  put(session: UploadSession, part: number, bytes: ReadableStream, size: number): Promise<R2UploadedPart>;
   complete(session: UploadSession, parts: R2UploadedPart[]): Promise<void>;
 }
 export class MultipartTransport implements UploadTransport {
@@ -12,8 +12,13 @@ export class MultipartTransport implements UploadTransport {
     const upload = await this.bucket.createMultipartUpload(key, { customMetadata: { sha256 } });
     return { key, uploadId: upload.uploadId };
   }
-  async put(session: UploadSession, part: number, bytes: ReadableStream): Promise<R2UploadedPart> {
-    return this.bucket.resumeMultipartUpload(session.key, session.uploadId).uploadPart(part, bytes);
+  async put(session: UploadSession, part: number, bytes: ReadableStream, size: number): Promise<R2UploadedPart> {
+    // Incoming HTTP/2 bodies do not always carry a known-length stream into R2.
+    const fixed = new FixedLengthStream(size);
+    const sending = bytes.pipeTo(fixed.writable);
+    const storing = this.bucket.resumeMultipartUpload(session.key, session.uploadId).uploadPart(part, fixed.readable);
+    const [, uploaded] = await Promise.all([sending, storing]);
+    return uploaded;
   }
   async complete(session: UploadSession, parts: R2UploadedPart[]): Promise<void> {
     await this.bucket.resumeMultipartUpload(session.key, session.uploadId).complete(parts);
