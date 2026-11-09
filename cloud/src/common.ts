@@ -1,4 +1,16 @@
-export interface Env { DEVICE_AUTH_URL: string }
+import type { Recording } from './recording';
+export interface Env {
+  JOBS: DurableObjectNamespace<Recording>;
+  RECORDINGS: R2Bucket;
+  INGEST: Queue<{ id: string }>;
+  DEVICE_AUTH_URL: string;
+  BOARDER?: Fetcher;
+  R2_PREFIX: string;
+  MAX_UPLOAD_BYTES?: string;
+  TRANSCRIBE?: Fetcher;
+  TIDY?: Fetcher;
+  DELIVER?: Fetcher;
+}
 export class HttpError extends Error {
   constructor(public status: number, message: string) { super(`${status} ${message}`); }
 }

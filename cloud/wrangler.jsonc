@@ -6,5 +6,46 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  "workers_dev": true
+  "workers_dev": true,
+  "r2_buckets": [
+    {
+      "binding": "RECORDINGS",
+      "bucket_name": "0bridge-backups"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "JOBS",
+        "class_name": "Recording"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Recording"
+      ]
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "INGEST",
+        "queue": "velcro-recordings"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "velcro-recordings",
+        "max_batch_size": 1,
+        "max_retries": 10
+      }
+    ]
+  },
+  "vars": {
+    "R2_PREFIX": "datalake/velcro/recordings/",
+    "MAX_UPLOAD_BYTES": "4294967296"
+  }
 }
