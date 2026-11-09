@@ -1,0 +1,29 @@
+name: 녹음 클라우드 시험
+on:
+  pull_request:
+    paths: ["cloud/**", ".github/workflows/cloud.yml"]
+  push:
+    branches: [main]
+    paths: ["cloud/**", ".github/workflows/cloud.yml"]
+permissions:
+  contents: read
+jobs:
+  cloud:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: cloud/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm test
