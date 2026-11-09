@@ -19,3 +19,7 @@ export class MultipartTransport implements UploadTransport {
     await this.bucket.resumeMultipartUpload(session.key, session.uploadId).complete(parts);
   }
 }
+
+export function missingUpload(error: unknown): boolean {
+  return error instanceof Error && /NoSuchUpload|multipart upload does not exist|\(10024\)/i.test(error.message);
+}

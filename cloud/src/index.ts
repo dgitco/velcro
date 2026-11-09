@@ -1,6 +1,6 @@
 import { body, digest, exact, HttpError, json, type Env } from './common';
 import { deviceEndpoints, deviceOwner } from './device';
-import { MultipartTransport } from './transport';
+import { MultipartTransport, PART_SIZE, missingUpload } from './transport';
 export { Recording } from './recording';
 function identifier(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) throw new HttpError(400, 'invalid_id');
@@ -18,7 +18,9 @@ async function fetch(request: Request, env: Env): Promise<Response> {
   const owner = await deviceOwner(request, env);
   if (request.method === 'POST' && pathname === '/v1/uploads') {
     const data = await body(request); exact(data, ['size', 'sha256', 'ext', 'recordedAt']);
-    if (!Number.isSafeInteger(data.size) || (data.size as number) < 1 || (data.size as number) > 200 * 1024 * 1024) {
+    const maxSize = Number(env.MAX_UPLOAD_BYTES ?? 4 * 1024 ** 3);
+    if (!Number.isSafeInteger(maxSize) || maxSize < 1 || maxSize > PART_SIZE * 10000) throw new HttpError(503, 'invalid_upload_limit');
+    if (!Number.isSafeInteger(data.size) || (data.size as number) < 1 || (data.size as number) > maxSize) {
       throw new HttpError(400, 'invalid_size');
     }
     const sha256 = identifier(data.sha256);
@@ -43,7 +45,13 @@ async function fetch(request: Request, env: Env): Promise<Response> {
       const uploadSession = session(request), number = Number(match[3]);
       const part = await job.part(owner, uploadSession, number);
       if (request.headers.get('Content-Length') !== String(part.size) || !request.body) throw new HttpError(400, 'invalid_part_size');
-      const uploaded = await new MultipartTransport(env.RECORDINGS).put(part.session, number, request.body);
+      let uploaded: R2UploadedPart;
+      try { uploaded = await new MultipartTransport(env.RECORDINGS).put(part.session, number, request.body); }
+      catch (error) {
+        if (!missingUpload(error)) throw error;
+        await job.expire(owner, uploadSession);
+        throw new HttpError(409, 'upload_expired');
+      }
       await job.savePart(owner, uploadSession, uploaded);
       return json({ partNumber: uploaded.partNumber }, 201);
     }

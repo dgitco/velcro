@@ -15,13 +15,15 @@
 
 ## 업로드 계약
 
-`POST /v1/uploads`에 `{size, sha256, ext, recordedAt}`를 보낸다. 원래 파일 이름이나 소유권 필드는 거절한다. 크기는 1바이트~200 MiB, SHA-256은 소문자 64자리, 시각은 유효한 UTC ISO 8601이다. 확장자는 `wav`, `mp3`, `m4a`, `mp4`, `ogg`, `flac`, `aac`, `wma` 중 하나다.
+`POST /v1/uploads`에 `{size, sha256, ext, recordedAt}`를 보낸다. 원래 파일 이름이나 소유권 필드는 거절한다. 크기는 기본 1바이트~4 GiB(`MAX_UPLOAD_BYTES`, 기본 `4294967296`), SHA-256은 소문자 64자리, 시각은 유효한 UTC ISO 8601이다. 확장자는 `wav`, `mp3`, `m4a`, `mp4`, `ogg`, `flac`, `aac`, `wma` 중 하나다.
 
 응답은 `{id, transport:"multipart", uploadSession, partSize, partCount, partUrl}`이다. 조각은 50 MiB씩이며 마지막만 더 작을 수 있다. 각 조각은 `PUT /v1/uploads/:id/parts/:n`으로 보낸다. `Upload-Session`과 정확한 `Content-Length`가 필요하다. 바이트는 R2 바인딩 `uploadPart`로 흘려보내고 메모리에 전부 담지 않는다.
 
 `POST /v1/uploads/:id/complete`, 본문 `{}`, 같은 `Upload-Session`으로 조립·검증한다. R2 HEAD의 크기·SHA-256 메타데이터를 대조하고, 메타데이터 위조도 잡도록 R2 GET 스트림의 실제 SHA-256을 추가 계산한다. 성공은 `202`, 상태는 `GET /v1/uploads/:id`로 읽는다. 클라이언트는 성공 응답을 확인하기 전 원본을 보관해야 한다.
 
-같은 회원·SHA-256에는 Durable Object 하나만 배정한다. 완료된 녹음의 덮어쓰기·삭제 API는 없다. 체크섬이 다른 파일도 보존하고, 다시 시작하면 같은 녹음 ID 아래 새 무작위 경로·업로드 세션을 발급한다. 다른 회원은 상태·조각·완료 경로에 접근할 수 없다.
+같은 회원·SHA-256에는 Durable Object 하나만 배정한다. 완료된 녹음의 덮어쓰기·삭제 API는 없다. 체크섬이 다른 파일도 보존하고, 다시 시작하면 같은 녹음 ID 아래 새 무작위 경로·업로드 세션을 발급한다. 다른 회원은 상태·조각·완료 경로에 접근할 수 없다. 미완성 조각이 만료되면 `409 upload_expired`를 반환하고, 다음 업로드 시작 요청에서 새 세션으로 복구한다.
+
+운영자는 `MAX_UPLOAD_BYTES`로 상한을 조절할 수 있다. 50 MiB 조각 10,000개를 넘는 설정은 거절한다.
 
 현재 전송은 `UploadTransport` 구현인 `MultipartTransport`다. S3 서명 열쇠 없이 동작하며, 나중에 서명 주소 방식으로 교체할 자리를 분리했다. 지금은 서명 주소를 반환하지 않는다.
 

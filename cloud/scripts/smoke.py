@@ -78,11 +78,20 @@ assert repeated == 201 and duplicate['id'] == upload['id'], (repeated, duplicate
 closed, _ = request(f"/v1/uploads/{upload['id']}/parts/1", 'PUT', raw,
                     {**headers, 'Content-Length': str(len(raw))})
 assert closed == 409, closed
+limit = 4 * 1024 ** 3
+boundary_metadata = {**metadata, 'size': limit,
+                     'sha256': hashlib.sha256(b'upload-limit-reservation-fixture').hexdigest()}
+large_status, large = request('/v1/uploads', 'POST', boundary_metadata)
+assert large_status == 201 and large['partCount'] == 82, (large_status, large)
+over_limit, _ = request('/v1/uploads', 'POST', {**boundary_metadata, 'size': limit + 1})
+assert over_limit == 400, over_limit
 result = {'utc': now.isoformat(), 'base': base,
           'fixture': {'kind': 'generated-silence-wav', 'durationSeconds': 1, **metadata},
           'uploadId': upload['id'], 'unauthenticated': unauthorized, 'created': created,
           'parts': parts, 'completed': completed, 'status': checked, 'phase': state['phase'], 'attempts': state['attempts'],
           'nextAttemptAt': state.get('nextAttemptAt'),
-          'deduplicated': True, 'overwriteRejected': closed}
+          'deduplicated': True, 'overwriteRejected': closed,
+          'limitReservation': {'bytes': limit, 'status': large_status, 'partCount': large['partCount'],
+                               'overLimitStatus': over_limit, 'bytesTransferred': 0}}
 Path(args.output).write_text(json.dumps(result, indent=2) + '\n')
 print(json.dumps(result, indent=2))

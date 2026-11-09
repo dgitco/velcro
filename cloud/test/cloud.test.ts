@@ -145,9 +145,28 @@ describe('recording ingestion contract', () => {
     expect((await complete(retry)).status).toBe(202);
     expect((await bindings.RECORDINGS.list()).objects).toHaveLength(2);
   });
-  it.each([0, -1, 200 * 1024 * 1024 + 1, 1.5])('rejects invalid size %s', async size => {
+  it.each(['part', 'complete'])('replaces an expired R2 multipart session after %s fails', async operation => {
+    identity(); const upload = await reserve();
+    const saved = await runInDurableObject(stub(upload.id), async (_instance, state) => {
+      return state.storage.get<{ session: { key: string; uploadId: string } }>('job');
+    });
+    if (operation === 'complete') expect((await put(upload)).status).toBe(201);
+    await bindings.RECORDINGS.resumeMultipartUpload(saved!.session.key, saved!.session.uploadId).abort();
+    expect((await (operation === 'part' ? put(upload) : complete(upload))).status).toBe(409);
+    const retry = await reserve();
+    expect(retry.id).toBe(upload.id); expect(retry.uploadSession).not.toBe(upload.uploadSession);
+    expect((await put(retry)).status).toBe(201);
+    expect((await complete(retry)).status).toBe(202);
+  });
+  it.each([0, -1, 4 * 1024 ** 3 + 1, 1.5])('rejects invalid size %s', async size => {
     identity(); const upload = await reserve();
     expect((await call('/v1/uploads', 'POST', { ...upload.metadata, size })).status).toBe(400);
+  });
+  it.each([350 * 1024 * 1024, 4 * 1024 ** 3])('accepts large recordings up to the configured limit: %s', async size => {
+    identity(); const upload = await reserve();
+    const response = await call('/v1/uploads', 'POST', { ...upload.metadata, sha256: 'a'.repeat(64), size });
+    expect(response.status).toBe(201);
+    expect((await response.json() as { partCount: number }).partCount).toBe(Math.ceil(size / (50 * 1024 * 1024)));
   });
   it('rejects invalid calendar dates and oversized JSON', async () => {
     identity(); const upload = await reserve();

@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { hex, HttpError, readText, type Env } from './common';
-import { MultipartTransport, PART_SIZE, type UploadSession } from './transport';
+import { MultipartTransport, PART_SIZE, missingUpload, type UploadSession } from './transport';
 export interface Upload {
   id: string; owner: string; key: string; size: number; sha256: string;
   ext: string; recordedAt: string;
@@ -71,6 +71,15 @@ export class Recording extends DurableObject<Env> {
       await this.ctx.storage.put('job', job);
     });
   }
+  async expire(owner: string, session: string): Promise<void> {
+    await this.exclusive(async () => {
+      const job = await this.owned(owner);
+      if (job.phase === 'uploading' && !job.assembled && job.session.uploadId === session) {
+        job.error = 'upload_expired';
+        await this.ctx.storage.put('job', job);
+      }
+    });
+  }
   private async owned(owner: string): Promise<Job> {
     const job = await this.ctx.storage.get<Job>('job');
     if (!job || job.upload.owner !== owner) throw new HttpError(404, 'upload_not_found');
@@ -90,7 +99,13 @@ export class Recording extends DurableObject<Env> {
       if (!job.assembled) {
         // Completion may have committed just before an eviction. HEAD recovers it.
         if (!await this.env.RECORDINGS.head(job.upload.key)) {
-          await new MultipartTransport(this.env.RECORDINGS).complete(job.session, job.parts);
+          try { await new MultipartTransport(this.env.RECORDINGS).complete(job.session, job.parts); }
+          catch (error) {
+            if (!missingUpload(error)) throw error;
+            job.error = 'upload_expired';
+            await this.ctx.storage.put('job', job);
+            throw new HttpError(409, 'upload_expired');
+          }
         }
         job.assembled = true;
         await this.ctx.storage.put('job', job);

@@ -45,6 +45,7 @@
     ]
   },
   "vars": {
-    "R2_PREFIX": "datalake/velcro/recordings/"
+    "R2_PREFIX": "datalake/velcro/recordings/",
+    "MAX_UPLOAD_BYTES": "4294967296"
   }
 }
