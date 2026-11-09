@@ -9,6 +9,9 @@ Python standard library only. Everything below `Windows layer` is portable so it
   python velcro_win.py set KEY VALUE | settings | recorder add ROOT
 """
 import hashlib, json, os, shutil, sys, threading, time, wave, datetime
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from velcro_cloud import Uploader, login as cloud_login, cloud_url, CloudError
+from velcro_credentials import CredentialError
 
 VERSION = "0.2.2"  # windows-v<VERSION> on GitHub releases
 RELEASES = "https://api.github.com/repos/dgitco/velcro/releases?per_page=30"
@@ -232,6 +235,8 @@ def _import_volume(root, s, device=None, uuid="", log=print):
             if not os.path.exists(meta):
                 with open(meta, "w", encoding="utf-8") as m:
                     m.write(SEP.join([os.path.basename(f), str(os.path.getsize(f)), sha, at, device, uuid, "" if secs is None else str(secs)]))
+            if get(s, "upload.cloud"):
+                manifest_add(d, name, os.path.basename(f), os.path.getsize(f), sha, at, device, uuid, secs)
         else:
             manifest_add(d, name, os.path.basename(f), os.path.getsize(f), sha, at, device, uuid, secs)
         ok.append(f)
@@ -270,6 +275,8 @@ def _import_files(files, s, log=print):
         if queued:
             with open(os.path.join(d, ".meta", name), "w", encoding="utf-8") as m:
                 m.write(SEP.join([os.path.basename(f), str(os.path.getsize(f)), sha, at, "Manual upload", "", "" if secs is None else str(secs)]))
+            if get(s, "upload.cloud"):
+                manifest_add(d, name, os.path.basename(f), os.path.getsize(f), sha, at, "Manual upload", "", secs)
         else:
             manifest_add(d, name, os.path.basename(f), os.path.getsize(f), sha, at, "Manual upload", "", secs)
         ok += 1
@@ -432,6 +439,7 @@ def run_loop(log=print, every=3, on_new=None):
                 if (root + serial) not in seen and is_on(s, "import.auto"):
                     import_volume(root, s, label, serial, log)
             seen = now
+            upload_cloud(s, log)
             if on_new:
                 offered &= {r + sn for r, _, sn in removable_drives()}  # offer again after it is unplugged and back
         except Exception as e:  # keep watching whatever happens
@@ -450,10 +458,20 @@ def main(argv):
             print(import_volume(r, s))
     elif cmd == "run":
         run_loop()
+    elif cmd == "login":
+        return login(s)
+    elif cmd == "upload":
+        return upload_cloud(s)
     elif cmd == "set" and len(argv) >= 3:
         if argv[1] == "record.hotkey" and not parse_hotkey(" ".join(argv[2:])):
             print("record.hotkey is modifiers plus one key, like ctrl+alt+r")
             return 2
+        if argv[1] == "upload.cloud":
+            try:
+                cloud_url(" ".join(argv[2:]))
+            except CloudError as error:
+                print(str(error))
+                return 2
         s[argv[1]] = [" ".join(argv[2:])]
         write_settings(s)
     elif cmd == "recorder" and argv[1:2] == ["add"] and len(argv) == 3:
@@ -478,17 +496,54 @@ def main(argv):
 
 def import_volume(*a, **k):
     with IMPORT_LOCK:
-        return _import_volume(*a, **k)
+        result = _import_volume(*a, **k)
+        _upload_cloud(a[1], k.get("log", a[4] if len(a) > 4 else print))
+        return result
 
 
 def import_files(*a, **k):
     with IMPORT_LOCK:
-        return _import_files(*a, **k)
+        result = _import_files(*a, **k)
+        _upload_cloud(a[1], k.get("log", a[2] if len(a) > 2 else print))
+        return result
 
 
 def flush_queue(*a, **k):
     with IMPORT_LOCK:
         return _flush_queue(*a, **k)
+
+
+def _upload_cloud(s, log=print):
+    base = get(s, "upload.cloud")
+    if not base:
+        return 0
+    try:
+        uploader = Uploader(base, os.path.join(state_dir(), "cloud"))
+        failures = 0
+        for folder in (dest_dir(s), queue_dir()):
+            if os.path.isfile(os.path.join(folder, MANIFEST)):
+                failures += uploader.run(folder, log, missing_ok=folder == queue_dir())
+        return failures
+    except (CloudError, CredentialError, OSError, ValueError):
+        log("cloud: could not upload; backup kept for retry")
+        return 1
+
+
+def upload_cloud(s, log=print):
+    with IMPORT_LOCK:
+        return _upload_cloud(s, log)
+
+
+def login(s=None, notify=print):
+    try:
+        base = get(s if s is not None else read_settings(), "upload.cloud")
+        if not base:
+            raise CloudError("Set upload.cloud to your cloud address first")
+        cloud_login(base, notify=notify)
+        return 0
+    except (CloudError, CredentialError, OSError, ValueError, KeyError):
+        notify("Cloud login failed or expired; try Login to cloud again")
+        return 1
 
 
 if __name__ == "__main__":

@@ -1,0 +1,45 @@
+{
+  "date": "2026-11-09",
+  "linux": {
+    "suite": "python3 -m unittest discover -s tests",
+    "tests": 142,
+    "skipped": 3,
+    "passed": true
+  },
+  "mac13": {
+    "os": "macOS 15.7.9",
+    "appBuild": true,
+    "cloudTests": 20,
+    "installTests": 3,
+    "keychainRoundtrip": true,
+    "temporaryCredentialDeleted": true
+  },
+  "windows": {
+    "os": "Windows Server 2022",
+    "cloudTests": 20,
+    "importTests": 11,
+    "credentialManagerRoundtrip": true,
+    "temporaryCredentialDeleted": true,
+    "deviceCodeIssued": true,
+    "approvalState": "pending",
+    "browserApprovalCompleted": false
+  },
+  "review": {
+    "independentAgent": "PASS",
+    "cloudTests": 17,
+    "importContractTests": 3,
+    "recordingsTests": 61
+  },
+  "largeMultipart": {
+    "status": "blocked",
+    "generatedSilenceSizesMiB": [
+      210,
+      51
+    ],
+    "first50MiBPartAcknowledged": false,
+    "failure": "transport/socket error",
+    "reportedToLead": true,
+    "fixedTimeoutChangedToPartSizeBudget": true,
+    "largeRetestAfterTimeoutChange": false
+  }
+}

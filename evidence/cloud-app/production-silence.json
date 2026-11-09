@@ -1,0 +1,46 @@
+{
+  "utc": "2026-11-09T02:06:33.095333+00:00",
+  "cloud": "https://velcro-recordings.dgit.workers.dev",
+  "fixture": {
+    "kind": "generated-silence-wav",
+    "size": 1048620,
+    "sha256": "38a01f53847627e2ef86dd5dce2b295c9c713f010ae95356f118ead432bfcc62"
+  },
+  "id": "d26b6f250dc4674cc7f5c1f9818424db19a70fa444f1659c2f74f94055d6e1a0",
+  "interruptedAndResumed": true,
+  "confirmedPartNotResent": true,
+  "duplicateSkipped": true,
+  "backupUnchanged": true,
+  "calls": [
+    {
+      "method": "POST",
+      "route": "/v1/uploads",
+      "phase": null
+    },
+    {
+      "method": "GET",
+      "route": "/v1/uploads/d26b6f250dc4674cc7f5c1f9818424db19a70fa444f1659c2f74f94055d6e1a0",
+      "phase": "uploading"
+    },
+    {
+      "method": "PUT",
+      "route": "/v1/uploads/d26b6f250dc4674cc7f5c1f9818424db19a70fa444f1659c2f74f94055d6e1a0/parts/1",
+      "phase": null
+    },
+    {
+      "method": "POST",
+      "route": "/v1/uploads",
+      "phase": null
+    },
+    {
+      "method": "GET",
+      "route": "/v1/uploads/d26b6f250dc4674cc7f5c1f9818424db19a70fa444f1659c2f74f94055d6e1a0",
+      "phase": "uploading"
+    },
+    {
+      "method": "POST",
+      "route": "/v1/uploads/d26b6f250dc4674cc7f5c1f9818424db19a70fa444f1659c2f74f94055d6e1a0/complete",
+      "phase": "received"
+    }
+  ]
+}

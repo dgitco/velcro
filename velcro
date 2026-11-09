@@ -49,6 +49,7 @@ CLIP_HELPER=${SELF:h}/velcro-clip-host
 TRANSCRIBE_HELPER=${SELF:h}/velcro-transcribe
 # Recordings (see "velcro help"): transcribe, tidy and deliver what import brought in.
 RECORDINGS_HELPER=${SELF:h}/velcro-recordings
+CLOUD_HELPER=${SELF:h}/velcro_cloud.py
 
 log() { print -r -- "$(date '+%F %T') $*" >>"$LOG"; }
 
@@ -263,7 +264,7 @@ cmd_install() {
     [[ $SELF == "${BIN:A}" ]] || { rm -f "$BIN"; cp "$SELF" "$BIN"; chmod +x "$BIN"; }
     # velcro transcribe finds its helper next to the command.
     local helper
-    for helper in $TRANSCRIBE_HELPER $RECORDINGS_HELPER; do
+    for helper in $TRANSCRIBE_HELPER $RECORDINGS_HELPER $CLOUD_HELPER ${SELF:h}/velcro_credentials.py; do
       [[ -f $helper && ${helper:A} != ${BIN:h:A}/${helper:t} ]] &&
         cp -f "$helper" "${BIN:h}/${helper:t}" && chmod +x "${BIN:h}/${helper:t}"
     done
@@ -395,7 +396,7 @@ cmd_env() {
 #   recordings.since    = 2026-10-21                only recordings imported at or after this time
 #   recordings.timeout  = 10800                     seconds the engine may take (1800 + half the recording)
 
-KEYS=(import.dest import.ext import.folder import.delete import.auto recorder send.inbox send.keep map
+KEYS=(import.dest import.ext import.folder import.delete import.auto upload.cloud recorder send.inbox send.keep map
   mic.host mic.on mic.warm clip.host clip.on transcribe.lang transcribe.engine transcribe.login transcribe.codex transcribe.fallback
   recordings.dir recordings.out recordings.engine recordings.tidy recordings.deliver recordings.done recordings.alert recordings.since
   recordings.timeout)
@@ -447,10 +448,11 @@ cmd_set() {
   [[ $1 == --add ]] && { append=1; shift; }
   local key=$1 v line; shift 2>/dev/null
   (( ${KEYS[(Ie)$key]} )) || { print -u2 "unknown setting: $key (one of: $KEYS)"; return 2; }
-  [[ $key == (transcribe.(fallback|lang|codex)|recordings.*) ]] && (( $# > 1 )) &&
+  [[ $key == (upload.cloud|transcribe.(fallback|lang|codex)|recordings.*) ]] && (( $# > 1 )) &&
     { print -u2 "$key takes one value; quote a command line: velcro set $key \"whisper-cli -nt -f\""; return 2; }
   for v in "$@"; do
     case $key in
+      upload.cloud) python3 "$CLOUD_HELPER" validate --cloud "$v" || return 2 ;;
       import.delete|import.auto) [[ $v == (yes|no) ]] || { print -u2 "$key is yes or no"; return 2; } ;;
       import.folder) [[ $v != /* && $v != (..|*/..|../*|*/../*) ]] || { print -u2 "import.folder is a folder on the recorder, like RECORD"; return 2; } ;;
       send.keep) [[ $v == <-> ]] || { print -u2 "send.keep is a number of days"; return 2; } ;;
@@ -756,6 +758,7 @@ import_recordings() {
         # Remember what manifest_add needs for when the file moves on to import.dest.
         [[ -e $QUEUE/.meta/$got_name ]] ||
           print -r -- "${f:t}$SEP$(size_of "$f")$SEP$got_sha$SEP$(now_iso)$SEP$device$SEP$uuid$SEP$secs$SEP$imp" >"$QUEUE/.meta/$got_name"
+        [[ -z $(setting upload.cloud) ]] || manifest_add "$dir" "$got_name" "${f:t}" "$(size_of "$f")" "$got_sha" "$(now_iso)" "$device" "$uuid" "$secs" "$imp"
       else
         manifest_add "$dir" "$got_name" "${f:t}" "$(size_of "$f")" "$got_sha" "$(now_iso)" "$device" "$uuid" "$secs" "$imp"
       fi
@@ -844,7 +847,7 @@ cmd_import() {
   fi
   # Quick exit for the LaunchAgent, which runs this on every mount of anything.
   local -a waiting=("$QUEUE"/[^.]*(N.[1]))
-  [[ -n $auto && $# == 0 && -z $(setting recorder) && ${#waiting} == 0 ]] && return 0
+  [[ -n $auto && $# == 0 && -z $(setting recorder) && ${#waiting} == 0 && -z $(setting upload.cloud) ]] && return 0
   mkdir -p "$CONF_DIR" "$SUPPORT" "${LOG:h}"
   # One import at a time, separate from the reconnect lock so shares keep coming back meanwhile.
   # A second request (say, the NAS remounting mid-import) asks the running one to look again.
@@ -883,8 +886,43 @@ cmd_import() {
     flush_queue
     [[ -e $IMPORT_AGAIN ]] || break
   done
+  cloud_upload
   rm -f "$IMPORT_STATUS"
   return $result
+}
+
+# Upload only verified backup files. Import and explicit retries share the import lock.
+cloud_upload() {
+  local base=$(setting upload.cloud) dest=$(folder_setting import.dest)
+  [[ -n $base ]] || return 0
+  [[ -f $CLOUD_HELPER ]] || { log "cloud: helper missing; install velcro again"; return 1; }
+  local result=0
+  if [[ -f $dest/$MANIFEST ]]; then
+    python3 "$CLOUD_HELPER" upload --cloud "$base" --folder "$dest" --state "$SUPPORT/cloud" >>"$LOG" 2>&1 || result=1
+  fi
+  if [[ -f $QUEUE/$MANIFEST ]]; then
+    python3 "$CLOUD_HELPER" upload --cloud "$base" --folder "$QUEUE" --state "$SUPPORT/cloud" --queue >>"$LOG" 2>&1 || result=1
+  fi
+  return $result
+}
+
+cmd_upload() {
+  mkdir -p "$CONF_DIR" "$SUPPORT" "${LOG:h}"
+  local lockfd
+  : >>"$IMPORT_LOCK"
+  zsystem flock -t 0 -f lockfd "$IMPORT_LOCK" 2>/dev/null || { print -u2 "An import or cloud upload is already running"; return 1; }
+  cloud_upload
+}
+
+cmd_login() {
+  local base=$(setting upload.cloud)
+  [[ -n $base ]] || { print -u2 "Set your cloud address first: velcro set upload.cloud https://your-cloud.example"; return 1; }
+  if python3 "$CLOUD_HELPER" login --cloud "$base"; then
+    notify "Cloud sign-in saved in Keychain"
+  else
+    notify "Cloud login failed or expired. Try velcro login again."
+    return 1
+  fi
 }
 
 # velcro recorder [add [mount point] | rm <uuid|name> | candidates]
@@ -1343,6 +1381,8 @@ case ${1:-help} in
   scan)        shift; cmd_scan "$@" ;;
   env)         cmd_env ;;
   import)      shift; cmd_import "$@" ;;
+  login)       cmd_login ;;
+  upload)      cmd_upload ;;
   recorder|recorders) shift; cmd_recorder "$@" ;;
   send)        shift; cmd_send "$@" ;;
   mic)         shift; cmd_mic "$@" ;;

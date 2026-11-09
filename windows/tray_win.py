@@ -8,7 +8,7 @@ u, k, sh = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.shell32
 WM_USER, WM_TRAY, WM_COMMAND, WM_DESTROY, WM_RBUTTONUP = 0x400, 0x401, 0x111, 0x2, 0x205
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
 NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO = 1, 2, 4, 0x10
-ID_IMPORT, ID_LOG, ID_SETTINGS, ID_QUIT, ID_RECORD, ID_RELOAD, ID_UPLOAD, ID_UPDATE, ID_ADD = 1, 2, 3, 4, 5, 6, 7, 8, 100  # ID_ADD+i: "Use drive i as recorder"
+ID_IMPORT, ID_LOG, ID_SETTINGS, ID_QUIT, ID_RECORD, ID_RELOAD, ID_UPLOAD, ID_UPDATE, ID_LOGIN, ID_CLOUD, ID_ADD = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 100  # ID_ADD+i: "Use drive i as recorder"
 WM_HOTKEY, HOTKEY_ID = 0x312, 1
 mm = ctypes.windll.winmm
 LRESULT = ctypes.c_ssize_t
@@ -127,6 +127,43 @@ def message(text):
     u.MessageBoxW(None, text, "velcro", 0x40)  # MB_ICONINFORMATION
 
 
+def cloud_address():
+    """Use the system's dialog controls; no API-key input or extra GUI runtime."""
+    import subprocess
+    current = v.get(v.read_settings(), "upload.cloud").replace("'", "''")
+    script = """
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$f = New-Object Windows.Forms.Form
+$f.Text = 'velcro cloud backup'; $f.ClientSize = New-Object Drawing.Size(450,140)
+$f.StartPosition = 'CenterScreen'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false
+$label = New-Object Windows.Forms.Label
+$label.Text = 'Cloud address (HTTPS, empty turns uploads off)'; $label.SetBounds(12,12,425,20)
+$field = New-Object Windows.Forms.TextBox
+$field.SetBounds(12,40,425,24); $field.Text = '""" + current + """'
+$save = New-Object Windows.Forms.Button
+$save.Text = 'Save'; $save.SetBounds(265,90,80,28); $save.DialogResult = 'OK'
+$cancel = New-Object Windows.Forms.Button
+$cancel.Text = 'Cancel'; $cancel.SetBounds(355,90,80,28); $cancel.DialogResult = 'Cancel'
+$f.Controls.AddRange(@($label,$field,$save,$cancel)); $f.AcceptButton = $save; $f.CancelButton = $cancel
+if ($f.ShowDialog() -eq 'OK') { [Console]::Write($field.Text) } else { exit 2 }
+"""
+    r = subprocess.run(["powershell.exe", "-NoProfile", "-Command", script], capture_output=True,
+                       encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW)
+    if r.returncode:
+        return
+    value = r.stdout.strip().lstrip("\ufeff")
+    try:
+        if value:
+            value = v.cloud_url(value)
+    except v.CloudError as error:
+        message(str(error))
+        return
+    s = v.read_settings()
+    s["upload.cloud"] = [value]
+    v.write_settings(s)
+
+
 def main():
     k.CreateMutexW(None, False, "Local\\velcro-tray")
     if k.GetLastError() == 183:  # ERROR_ALREADY_EXISTS: one tray icon per user
@@ -205,7 +242,7 @@ def main():
             m = u.CreatePopupMenu()
             hk = v.get(v.read_settings(), "record.hotkey")
             items = [(ID_RECORD, f"Stop recording ({hk})" if rec.active else f"Start recording ({hk})"), (ID_IMPORT, "Import now"),
-                     (ID_UPLOAD, "Upload recordings...")]
+                     (ID_UPLOAD, "Upload recordings..."), (ID_CLOUD, "Cloud address..."), (ID_LOGIN, "Login to cloud...")]
             if update.get("v"):
                 items.insert(0, (ID_UPDATE, f"Update to {update['v']} (download)"))
             s = v.read_settings()
@@ -237,6 +274,11 @@ def main():
                         ok, bad = v.import_files(files, v.read_settings(), say)
                         balloon(f"Uploaded {ok} recording(s)" + (f", {bad} failed (see log)" if bad else ""))
                     threading.Thread(target=up, daemon=True).start()
+            elif c == ID_LOGIN:
+                # Browser approval stays on this PC. Never write tokens or device codes to the log.
+                threading.Thread(target=lambda: v.login(notify=balloon), daemon=True).start()
+            elif c == ID_CLOUD:
+                cloud_address()
             elif c == ID_UPDATE and update.get("zip"):
                 # Opens the download in the browser; install.cmd from the new zip replaces this copy. The app does not
                 # download and run installers itself: that pattern got the first build flagged by Defender (11/06).

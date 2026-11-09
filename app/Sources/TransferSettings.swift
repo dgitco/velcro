@@ -43,6 +43,19 @@ struct ImportPane: View {
             }
 
             Section {
+                SettingField(title: "Cloud address", key: "upload.cloud", prompt: "https://your-cloud.example (empty: off)")
+                Button("Login to Cloud…") {
+                    Task { Notifier.handle(await CLI.run("login")) }
+                }
+                .disabled(store.setting("upload.cloud").isEmpty)
+            } header: {
+                Text("Cloud backup")
+            } footer: {
+                Text("Every verified recording is also uploaded here. Sign in through your browser; the device login stays in Keychain. Upload failures retry automatically and never delete the backup.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
                 FolderField(title: "Folder", key: "import.dest", prompt: "~/Recordings or /Volumes/home/recordings")
                 SettingField(title: "File types", key: "import.ext", prompt: "wav mp3 m4a")
                 SettingField(title: "Folder on the recorder", key: "import.folder", prompt: "RECORD (empty: the whole drive)")

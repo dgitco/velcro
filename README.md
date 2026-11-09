@@ -97,6 +97,23 @@ velcro import --files meeting.m4a interview.wav    # manually upload files; keep
 - In the menu: progress next to the icon, **Import Now**, and **Register Recorder** for a drive that's plugged in. Settings has the folder, file types, and switches for importing on plug-in and deleting after verifying.
 - **Upload Recordings…** in the menu or Settings lets you select recordings from any folder, without a registered recorder. It uses the same import folder, verification, offline queue and manifest as automatic recorder imports. Selected originals are always kept, even with `import.delete` on; no drive is ejected. `velcro import --files <file ...>` does the same from the command line.
 
+## 녹음 클라우드 백업
+
+`upload.cloud`는 기본으로 꺼져 있습니다. 주소를 설정하면 USB 가져오기와 **Upload Recordings…**로 고른 녹음, 같은 가져오기 경로를 쓰는 단축키 녹음을 모두 클라우드에도 올립니다. 먼저 백업 폴더 또는 오프라인 대기열에 복사하고 SHA-256을 확인합니다.
+
+```sh
+velcro set upload.cloud https://your-cloud.example
+velcro login
+velcro upload       # 대기 중인 업로드를 지금 재시도
+velcro set upload.cloud  # 끄기
+```
+
+맥은 Settings → Import의 **Cloud address**, 윈도우는 트레이의 **Cloud address…**에서 주소를 설정합니다. 윈도우 트레이의 **Login to cloud…**도 같은 기기 로그인입니다. 브라우저에서 승인하며 API 키 입력 칸은 없습니다. 기기 토큰은 맥 Keychain 또는 Windows Credential Manager에만 저장합니다. 클라우드 주소를 바꾸면 그 주소에 다시 로그인해야 합니다.
+
+업로드는 Worker가 정한 조각 크기를 사용하고 확인된 조각부터 이어 갑니다. 실패는 30초부터 최대 1시간 간격으로 재시도합니다. 맥의 기존 가져오기 에이전트는 5분마다, 윈도우 트레이는 실행 중 주기적으로 대기열을 확인합니다. 클라우드 실패 때문에 녹음 원본이나 백업을 지우지 않으며, USB 원본을 지우는 기존 `import.delete` 규칙은 그대로 적용합니다. 수동 선택 원본은 항상 보존합니다.
+
+`.velcro-import.jsonl`에는 원래 녹음 필드를 보존한 상태 행(`cloud_status: true`)을 추가하고 `cloud` 안에 주소·업로드 id·상태를 기록합니다. 공유 폴더에서 다른 기기가 추가한 녹음 행을 덮어쓰지 않습니다. 같은 파일명은 마지막 가져오기 행을 사용하며, 상태는 같은 SHA-256에만 적용합니다. `velcro recordings`는 상태 행을 건너뜁니다. SHA-256으로 같은 회원의 중복 파일을 막습니다. 파일 크기 제한은 Worker 설정을 따릅니다. 앱은 로컬 백업을 계속 보관합니다.
+
 ## Send to an inbox
 
 velcro keeps the last few images and files you copied. Pick one under **Send to Inbox** in the menu and it's saved in your inbox folder, and its path is put on the clipboard. Use a folder on a share, or one Dropbox or Syncthing keeps in sync; with a `map` rule, the path is the one another machine (say, a server you use over SSH) sees. velcro never changes the clipboard on its own.

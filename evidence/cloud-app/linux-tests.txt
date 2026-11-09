@@ -1,0 +1,5 @@
+python3 -m unittest discover -s tests
+----------------------------------------------------------------------
+Ran 142 tests in 14.807s
+
+OK (skipped=3)
