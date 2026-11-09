@@ -12,6 +12,7 @@ interface Job {
   upload: Upload;
   session: UploadSession;
   parts: R2UploadedPart[];
+  partSize?: number;
   assembled: boolean;
   phase: 'uploading' | 'received' | Stage | 'done';
   attempts: number;
@@ -53,19 +54,21 @@ export class Recording extends DurableObject<Env> {
         // A failed checksum stays preserved. A retry gets a fresh, unguessable key.
         upload.key = `${this.env.R2_PREFIX}${upload.id}/${crypto.randomUUID()}.${upload.ext}`;
         const session = await new MultipartTransport(this.env.RECORDINGS).create(upload.key, upload.sha256);
-        job = { upload, session, parts: [], assembled: false, phase: 'uploading', attempts: 0 };
+        job = { upload, session, parts: [], partSize: PART_SIZE, assembled: false, phase: 'uploading', attempts: 0 };
         await this.ctx.storage.put('job', job);
       }
-      return { upload: job.upload, session: job.session.uploadId, partSize: PART_SIZE,
-        partCount: Math.ceil(job.upload.size / PART_SIZE) };
+      const partSize = job.partSize ?? 50 * 1024 * 1024;
+      return { upload: job.upload, session: job.session.uploadId, partSize,
+        partCount: Math.ceil(job.upload.size / partSize) };
     });
   }
   async part(owner: string, session: string, number: number): Promise<{ session: UploadSession; size: number }> {
     const job = await this.owned(owner);
     if (job.phase !== 'uploading' || job.assembled || job.session.uploadId !== session) throw new HttpError(409, 'upload_closed');
-    const count = Math.ceil(job.upload.size / PART_SIZE);
+    const partSize = job.partSize ?? 50 * 1024 * 1024;
+    const count = Math.ceil(job.upload.size / partSize);
     if (!Number.isSafeInteger(number) || number < 1 || number > count) throw new HttpError(400, 'invalid_part');
-    return { session: job.session, size: Math.min(PART_SIZE, job.upload.size - (number - 1) * PART_SIZE) };
+    return { session: job.session, size: Math.min(partSize, job.upload.size - (number - 1) * partSize) };
   }
   async savePart(owner: string, session: string, part: R2UploadedPart): Promise<void> {
     await this.exclusive(async () => {
@@ -112,7 +115,7 @@ export class Recording extends DurableObject<Env> {
       const job = await this.owned(owner);
       if (job.session.uploadId !== session) throw new HttpError(409, 'invalid_upload_session');
       if (job.phase !== 'uploading') return job;
-      if (job.parts.length !== Math.ceil(job.upload.size / PART_SIZE)) throw new HttpError(409, 'missing_parts');
+      if (job.parts.length !== Math.ceil(job.upload.size / (job.partSize ?? 50 * 1024 * 1024))) throw new HttpError(409, 'missing_parts');
       if (!job.assembled) {
         // Completion may have committed just before an eviction. HEAD recovers it.
         if (!await this.env.RECORDINGS.head(job.upload.key)) {

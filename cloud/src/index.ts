@@ -57,7 +57,7 @@ async function fetch(request: Request, env: Env): Promise<Response> {
       const part = await job.part(owner, uploadSession, number);
       if (request.headers.get('Content-Length') !== String(part.size) || !request.body) throw new HttpError(400, 'invalid_part_size');
       let uploaded: R2UploadedPart;
-      try { uploaded = await new MultipartTransport(env.RECORDINGS).put(part.session, number, request.body, part.size); }
+      try { uploaded = await new MultipartTransport(env.RECORDINGS).put(part.session, number, request.body); }
       catch (error) {
         if (!missingUpload(error)) throw error;
         await job.expire(owner, uploadSession);

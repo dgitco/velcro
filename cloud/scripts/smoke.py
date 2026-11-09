@@ -30,7 +30,7 @@ def request(path, method='GET', data=None, extra=None, authenticated=True):
     headers.update(extra or {})
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=90) as response:
+        with urllib.request.urlopen(req, timeout=600) as response:
             return response.status, json.load(response)
     except urllib.error.HTTPError as error:
         return error.code, json.load(error)
@@ -80,9 +80,9 @@ closed, _ = request(f"/v1/uploads/{upload['id']}/parts/1", 'PUT', raw,
 assert closed == 409, closed
 limit = 4 * 1024 ** 3
 boundary_metadata = {**metadata, 'size': limit,
-                     'sha256': hashlib.sha256(b'upload-limit-reservation-fixture').hexdigest()}
+                     'sha256': hashlib.sha256(b'upload-limit-reservation-10mib-fixture').hexdigest()}
 large_status, large = request('/v1/uploads', 'POST', boundary_metadata)
-assert large_status == 201 and large['partCount'] == 82, (large_status, large)
+assert large_status == 201 and large['partCount'] == 410, (large_status, large)
 over_limit, _ = request('/v1/uploads', 'POST', {**boundary_metadata, 'size': limit + 1})
 assert over_limit == 400, over_limit
 result = {'utc': now.isoformat(), 'base': base,

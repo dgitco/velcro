@@ -97,7 +97,7 @@ describe('recording ingestion contract', () => {
   it('streams a multipart upload, verifies content, and preserves it after completion', async () => {
     identity();
     const upload = await reserve();
-    expect(upload.partSize).toBe(50 * 1024 * 1024);
+    expect(upload.partSize).toBe(10 * 1024 * 1024);
     expect((await put(upload)).status).toBe(201);
     const response = await complete(upload);
     expect(response.status).toBe(202);
@@ -162,11 +162,24 @@ describe('recording ingestion contract', () => {
     identity(); const upload = await reserve();
     expect((await call('/v1/uploads', 'POST', { ...upload.metadata, size })).status).toBe(400);
   });
+  it('preserves the negotiated 50MiB size for upload sessions created before the default changed', async () => {
+    identity(); const upload = await reserve();
+    await runInDurableObject(stub(upload.id), async (_instance, state) => {
+      const job = await state.storage.get<{ partSize?: number }>('job');
+      delete job!.partSize; await state.storage.put('job', job);
+    });
+    const response = await call('/v1/uploads', 'POST', upload.metadata);
+    const legacy = await response.json() as { partSize: number; uploadSession: string };
+    expect(legacy.partSize).toBe(50 * 1024 * 1024);
+    expect(legacy.uploadSession).toBe(upload.uploadSession);
+    expect((await put(upload)).status).toBe(201);
+    expect((await complete(upload)).status).toBe(202);
+  });
   it.each([350 * 1024 * 1024, 4 * 1024 ** 3])('accepts large recordings up to the configured limit: %s', async size => {
     identity(); const upload = await reserve();
     const response = await call('/v1/uploads', 'POST', { ...upload.metadata, sha256: 'a'.repeat(64), size });
     expect(response.status).toBe(201);
-    expect((await response.json() as { partCount: number }).partCount).toBe(Math.ceil(size / (50 * 1024 * 1024)));
+    expect((await response.json() as { partCount: number }).partCount).toBe(Math.ceil(size / (10 * 1024 * 1024)));
   });
   it('rejects invalid calendar dates and oversized JSON', async () => {
     identity(); const upload = await reserve();

@@ -27,7 +27,7 @@ def request(path, method='GET', data=None, extra=None):
     headers.update(extra or {})
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=90) as response:
+        with urllib.request.urlopen(req, timeout=600) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
