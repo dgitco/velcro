@@ -1,6 +1,6 @@
-# 녹음 클라우드 1단계
+# 녹음 클라우드
 
-목표: 기기 로그인으로 녹음을 받아 R2에 보존하고, 녹음별 Durable Object가 받아쓰기 → 정리 → 전달을 재시도한다. 앱 연결과 실제 엔진·전달 규칙은 이 단계에 포함하지 않는다.
+목표: 기기 로그인으로 녹음을 받아 R2에 보존하고, 녹음별 Durable Object가 받아쓰기 → 정리 → 전달을 재시도한다. 앱 연결과 실제 정리·전달 규칙은 별도 단계다.
 
 ## 인증
 
@@ -34,6 +34,24 @@
 실패한 단계만 10·20·40분으로 재시도하고 이후 두 배씩 늘려 최대 24시간 간격을 유지한다. 녹음은 실패해도 남는다. 완료된 단계는 저장해 다시 실행하지 않는다. 외부 호출 성공 직후 상태 저장 전에 중단될 가능성은 있으므로 엔진·훅은 `Idempotency-Key`로 부수 효과 중복을 막아야 한다.
 
 `TRANSCRIBE`, `TIDY`, `DELIVER`는 선택적 Worker 서비스 바인딩이다. HTTP `POST /v1/<단계>`에 `{id,key,sha256,recordedAt,idempotencyKey,text?}`를 보낸다. 받아쓰기·정리는 `{text}`, 전달은 `{receipt}`를 반환한다. 응답 상한은 256 KiB, 호출 시간은 20초다. 큰 파일의 비동기 받아쓰기는 다음 단계에서 이 계약을 확장한다. 바인딩이 없으면 재시도 상태로 남으며 가짜 결과를 만들지 않는다. 원문·엔진 오류 상세는 상태 응답과 로그에 쓰지 않는다.
+
+## 한국어 받아쓰기
+
+목표는 Workers AI 바인딩 `@cf/openai/whisper-large-v3-turbo`, `language: ko`로 긴 WAV를 서버 밖에서 받아쓰고 결과를 R2에 보존하는 것이다. 완료 기준은 워커 계약 시험·무음 WAV 운영 처리·독립 리뷰와 머지다. 개인 녹음·용어·전달 규칙과 기존 서버 타이머는 변경하지 않는다.
+
+`TRANSCRIBE_ENGINE=workers-ai`와 `AI` 바인딩으로 켠다. `TranscriptionEngine` 인터페이스 뒤의 구현이므로 다른 엔진으로 바꿀 수 있다. `TRANSCRIBE_GLOSSARY`는 운영자가 넣는 용어집이며 `initial_prompt`로 전달한다. 공개 코드에는 개인 용어를 넣지 않는다. VAD는 켜고 `condition_on_previous_text=false`로 둔다. 같은 6낱말 구절이 4번 이상 나오면 그 조각만 beam 5에서 1로 바꿔 한 번 더 받아쓴다. 다시 반복되면 글을 발행하지 않고 `repetition_persisted`로 재시도한다.
+
+PCM WAV는 약 5분씩 나눈다. 16kHz·16비트·모노 기준 9.6 MB다. 경계 앞뒤 10초를 읽고, 10ms 간격으로 0.5초 에너지를 비교해 가장 조용한 구간 가운데에서 자른다. 에너지가 같으면 5분에 가까운 곳을 고른다. 원본 프레임을 빠짐·겹침 없이 나누고 조각마다 새 WAV 헤더를 붙인다. 높은 샘플률은 Worker 메모리를 위해 헤더 포함 10 MiB를 상한으로 두며 검색 폭도 그 조각 길이에 맞춰 줄인다. 3시간 16kHz 모노 WAV의 기본 계획은 약 36조각이고 실제 경계에 따라 달라진다.
+
+전체 파일을 메모리에 올리지 않는다. 알람마다 한 조각을 받아쓰고 JSON과 진행 위치를 저장한다. 저장한 조각은 재사용하며 실패한 조각만 기존 10·20·40분 간격으로 재시도한다. AI 호출 상한은 60초이고, 긴 호출 동안 Durable Object의 30초 입력 잠금을 잡지 않는다. 무음의 빈 결과도 성공으로 저장한다.
+
+압축 오디오는 **10 MiB 이하면 파일 전체**를 모델에 보낸다. 그보다 긴 MP3·M4A 등은 `long_compressed_audio_pending`으로 보존·대기한다. 임의 바이트 경계에서 압축 컨테이너를 자르는 변환은 다음 단계다. WAV는 RIFF PCM, 8~32비트, 모노·스테레오, 8~192kHz를 지원한다. RF64·부동소수 WAV 등은 원본을 보존하고 `unsupported_audio` 또는 `invalid_wav`로 남는다.
+
+조각은 원본 키 아래 `.transcripts/<엔진>/chunks/<0부터 시작하는 번호>.json`, 합친 글은 `transcript.txt`, 완료 정보는 `complete.json`에 저장한다. 합칠 때도 알람마다 최대 128개씩 중간 페이지로 묶어 파일 크기와 무관하게 하위 요청 수를 제한한다. 본문은 Durable Object에 넣지 않는다. 정리 훅에는 `transcriptKey`를 추가로 전달한다.
+
+`GET /v1/uploads/:id/transcript`로 합친 글을 읽고 `/transcript/chunks/:n`으로 조각 JSON을 읽는다. 소유자만 접근할 수 있다. 아직 완성되지 않은 글은 409다. 상태의 `transcription`에는 완료 조각 수·예상 전체 수가 나오며, 모두 끝나면 정확한 전체 수를 준다.
+
+공식 계약: [Workers AI 모델](https://developers.cloudflare.com/workers-ai/models/whisper-large-v3-turbo/), [AI 바인딩](https://developers.cloudflare.com/workers-ai/configuration/bindings/). 워커 시험은 원격 바인딩을 끄고 가짜 AI만 사용한다.
 
 ## 개발·배포
 

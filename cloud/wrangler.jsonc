@@ -46,6 +46,11 @@
   },
   "vars": {
     "R2_PREFIX": "datalake/velcro/recordings/",
-    "MAX_UPLOAD_BYTES": "4294967296"
+    "MAX_UPLOAD_BYTES": "4294967296",
+    "TRANSCRIBE_ENGINE": "workers-ai"
+  },
+  "ai": {
+    "binding": "AI",
+    "remote": true
   }
 }

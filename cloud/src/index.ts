@@ -38,6 +38,17 @@ async function fetch(request: Request, env: Env): Promise<Response> {
       partSize: reserved.partSize, partCount: reserved.partCount,
       partUrl: `/v1/uploads/${id}/parts/{n}` }, 201);
   }
+  const transcript = pathname.match(/^\/v1\/uploads\/([a-f0-9]{64})\/transcript(?:\/chunks\/(\d+))?$/);
+  if (request.method === 'GET' && transcript) {
+    const job = env.JOBS.get(env.JOBS.idFromName(transcript[1]));
+    const key = await job.transcriptArtifact(owner, transcript[2] === undefined ? undefined : Number(transcript[2]));
+    const object = await env.RECORDINGS.get(key);
+    if (!object) throw new HttpError(404, 'transcript_not_found');
+    return new Response(object.body, { headers: {
+      'Cache-Control': 'no-store', 'Content-Length': String(object.size),
+      'Content-Type': transcript[2] === undefined ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8',
+    } });
+  }
   const match = pathname.match(/^\/v1\/uploads\/([a-f0-9]{64})(?:\/(complete|parts\/(\d+)))?$/);
   if (match) {
     const job = env.JOBS.get(env.JOBS.idFromName(match[1]));

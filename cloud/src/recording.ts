@@ -1,5 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { hex, HttpError, readText, type Env } from './common';
+import { AudioError } from './audio';
+import { RepetitionError, WhisperEngine, prepareTranscription, transcribeNext, finishTranscription, type TranscriptionProgress } from './transcribe';
 import { MultipartTransport, PART_SIZE, missingUpload, type UploadSession } from './transport';
 export interface Upload {
   id: string; owner: string; key: string; size: number; sha256: string;
@@ -16,12 +18,14 @@ interface Job {
   nextAttemptAt?: number;
   error?: string;
   transcript?: string;
+  transcriptKey?: string;
+  transcription?: TranscriptionProgress;
   tidied?: string;
   receipt?: string;
 }
 export interface EngineRequest {
   id: string; key: string; sha256: string; recordedAt: string;
-  idempotencyKey: string; text?: string;
+  idempotencyKey: string; text?: string; transcriptKey?: string;
 }
 export function retryDelay(attempt: number): number {
   return Math.min(600_000 * 2 ** Math.min(attempt - 1, 8), 86_400_000);
@@ -88,7 +92,20 @@ export class Recording extends DurableObject<Env> {
   async status(owner: string) {
     const job = await this.owned(owner);
     return { id: job.upload.id, phase: job.phase, attempts: job.attempts,
-      nextAttemptAt: job.nextAttemptAt, error: job.error };
+      nextAttemptAt: job.nextAttemptAt, error: job.error, transcriptKey: job.transcriptKey,
+      transcription: job.transcription ? { completedChunks: job.transcription.next, totalChunks: job.transcription.cursor >= job.transcription.plan.length ? job.transcription.next : undefined,
+        estimatedTotalChunks: job.transcription.next + Math.ceil((job.transcription.plan.length - job.transcription.cursor) / job.transcription.plan.chunkBytes) } : undefined };
+  }
+  async transcriptArtifact(owner: string, chunk?: number): Promise<string> {
+    const job = await this.owned(owner);
+    if (chunk === undefined) {
+      if (!job.transcriptKey) throw new HttpError(409, 'transcript_pending');
+      return job.transcriptKey;
+    }
+    if (!Number.isSafeInteger(chunk) || chunk < 0 || !job.transcription || chunk >= job.transcription.next) {
+      throw new HttpError(404, 'transcript_chunk_not_found');
+    }
+    return `${job.upload.key}.transcripts/${job.transcription.engine}/chunks/${chunk}.json`;
   }
   async complete(owner: string, session: string): Promise<void> {
     const job = await this.exclusive(async () => {
@@ -162,32 +179,42 @@ export class Recording extends DurableObject<Env> {
     });
   }
   async alarm(): Promise<void> {
-    await this.exclusive(async () => {
-      const job = await this.ctx.storage.get<Job>('job');
-      if (!job || job.phase === 'uploading' || job.phase === 'done') return;
-      if (job.phase === 'received') {
-        await this.ctx.storage.setAlarm(Date.now() + 60_000);
-        await this.env.INGEST.send({ id: job.upload.id });
-        return;
-      }
-      if (job.nextAttemptAt && job.nextAttemptAt > Date.now()) {
-        await this.ctx.storage.setAlarm(job.nextAttemptAt);
-        return;
-      }
-      const stage = job.phase;
-      job.attempts++;
-      job.nextAttemptAt = Date.now() + retryDelay(job.attempts);
-      await this.ctx.storage.transaction(async tx => {
-        await tx.put('job', job);
-        await tx.setAlarm(job.nextAttemptAt!);
-      });
-      try {
+    // Alarms are serialized by the runtime. Do not hold the 30-second input gate across AI inference.
+    const job = await this.ctx.storage.get<Job>('job');
+    if (!job || job.phase === 'uploading' || job.phase === 'done') return;
+    if (job.phase === 'received') {
+      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      await this.env.INGEST.send({ id: job.upload.id });
+      return;
+    }
+    if (job.nextAttemptAt && job.nextAttemptAt > Date.now()) {
+      await this.ctx.storage.setAlarm(job.nextAttemptAt);
+      return;
+    }
+    const stage = job.phase;
+    job.attempts++;
+    job.nextAttemptAt = Date.now() + retryDelay(job.attempts);
+    await this.ctx.storage.transaction(async tx => {
+      await tx.put('job', job);
+      await tx.setAlarm(job.nextAttemptAt!);
+    });
+    try {
+      if (stage === 'transcribe' && this.env.TRANSCRIBE_ENGINE === 'workers-ai') {
+        if (!this.env.AI) throw new Error('engine_not_configured');
+        const engine = new WhisperEngine(this.env.AI, this.env.TRANSCRIBE_GLOSSARY);
+        job.transcription ??= await prepareTranscription(this.env, job.upload, engine);
+        if (await transcribeNext(this.env, job.upload, engine, job.transcription)) {
+          job.transcriptKey = await finishTranscription(this.env, job.upload, job.transcription);
+          if (job.transcriptKey) job.phase = 'tidy';
+        }
+      } else {
         const engine = { transcribe: this.env.TRANSCRIBE, tidy: this.env.TIDY, deliver: this.env.DELIVER }[stage];
         if (!engine) throw new Error('engine_not_configured');
         const input: EngineRequest = {
           id: job.upload.id, key: job.upload.key, sha256: job.upload.sha256,
           recordedAt: job.upload.recordedAt, idempotencyKey: `${job.upload.id}:${stage}`,
           text: stage === 'tidy' ? job.transcript : stage === 'deliver' ? job.tidied : undefined,
+          transcriptKey: stage === 'tidy' ? job.transcriptKey : undefined,
         };
         const response = await engine.fetch('https://engine.internal/v1/' + stage, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': input.idempotencyKey },
@@ -201,18 +228,18 @@ export class Recording extends DurableObject<Env> {
         if (stage === 'transcribe') { job.transcript = result; job.phase = 'tidy'; }
         if (stage === 'tidy') { job.tidied = result; job.phase = 'deliver'; }
         if (stage === 'deliver') { job.receipt = result; job.phase = 'done'; }
-        job.attempts = 0;
-        delete job.error;
-        delete job.nextAttemptAt;
-      } catch {
-        // Engine errors can contain transcript text or credentials. Never persist them.
-        job.error = 'stage_failed';
       }
-      await this.ctx.storage.transaction(async tx => {
-        await tx.put('job', job);
-        if (job.phase === 'done') await tx.deleteAlarm();
-        else await tx.setAlarm(job.nextAttemptAt ?? Date.now() + 1000);
-      });
+      job.attempts = 0;
+      delete job.error;
+      delete job.nextAttemptAt;
+    } catch (error) {
+      // Engine errors can contain transcript text or credentials. Never persist them.
+      job.error = error instanceof AudioError ? error.code : error instanceof RepetitionError ? 'repetition_persisted' : 'stage_failed';
+    }
+    await this.ctx.storage.transaction(async tx => {
+      await tx.put('job', job);
+      if (job.phase === 'done') await tx.deleteAlarm();
+      else await tx.setAlarm(job.nextAttemptAt ?? Date.now() + 1000);
     });
   }
 }

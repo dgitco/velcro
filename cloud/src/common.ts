@@ -8,6 +8,9 @@ export interface Env {
   R2_PREFIX: string;
   MAX_UPLOAD_BYTES?: string;
   TRANSCRIBE?: Fetcher;
+  TRANSCRIBE_ENGINE?: string;
+  AI?: Ai;
+  TRANSCRIBE_GLOSSARY?: string;
   TIDY?: Fetcher;
   DELIVER?: Fetcher;
 }
