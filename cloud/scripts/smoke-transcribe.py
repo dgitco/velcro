@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""개인 녹음 없이 5분 20초 무음 WAV로 조각 받아쓰기·R2 결과를 검증한다."""
+"""개인 녹음 없이 5분 30초 무음 WAV로 조각 받아쓰기·R2 결과를 검증한다."""
 import argparse
 import datetime
 import hashlib
@@ -39,7 +39,7 @@ with wave.open(buffer, 'wb') as audio:
     audio.setnchannels(1)
     audio.setsampwidth(2)
     audio.setframerate(16000)
-    audio.writeframes(b'\x00\x00' * 16000 * 320)
+    audio.writeframes(b'\x00\x00' * 16000 * 330)
 raw = buffer.getvalue()
 metadata = {'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(), 'ext': 'wav',
             'recordedAt': now.isoformat(timespec='seconds').replace('+00:00', 'Z')}
@@ -47,6 +47,8 @@ created, body = request('/v1/uploads', 'POST', metadata)
 assert created == 201, (created, body)
 upload = json.loads(body)
 headers = {'Upload-Session': upload['uploadSession']}
+assert upload['partSize'] == 10 * 1024 * 1024, upload['partSize']
+print('새 10 MiB 세션으로 무음 WAV를 올립니다.', flush=True)
 _, body = request(f"/v1/uploads/{upload['id']}")
 if json.loads(body)['phase'] == 'uploading':
     for start in range(0, len(raw), upload['partSize']):
@@ -55,6 +57,7 @@ if json.loads(body)['phase'] == 'uploading':
         status, body = request(f"/v1/uploads/{upload['id']}/parts/{number}", 'PUT', chunk,
                                {**headers, 'Content-Length': str(len(chunk))})
         assert status == 201, (status, body)
+        print(f'업로드 조각 {number} 확인: {status}', flush=True)
 completed, body = request(f"/v1/uploads/{upload['id']}/complete", 'POST', {}, headers)
 assert completed == 202, (completed, body)
 deadline = time.monotonic() + 180
@@ -78,12 +81,12 @@ for index in range(count):
     chunk = json.loads(body)
     assert chunk['index'] == index, chunk
     chunks.append(chunk)
-assert chunks[0]['startMs'] == 0 and chunks[-1]['endMs'] == 320000, chunks
+assert chunks[0]['startMs'] == 0 and chunks[-1]['endMs'] == 330000, chunks
 assert all(left['endMs'] == right['startMs'] for left, right in zip(chunks, chunks[1:])), chunks
 assert transcript.decode() == '\n'.join(chunk['text'] for chunk in chunks), '합친 글 불일치'
 result = {'utc': now.isoformat(), 'base': base, 'fixture': {'kind': 'generated-silence-wav',
-          'durationSeconds': 320, 'sampleRate': 16000, 'channels': 1, **metadata},
-          'uploadId': upload['id'], 'created': created, 'completed': completed, 'status': checked,
+          'durationSeconds': 330, 'sampleRate': 16000, 'channels': 1, **metadata},
+          'uploadId': upload['id'], 'uploadPartSize': upload['partSize'], 'uploadPartCount': upload['partCount'], 'created': created, 'completed': completed, 'status': checked,
           'phase': state['phase'], 'transcriptStatus': transcript_status, 'transcriptBytes': len(transcript),
           'chunks': [{'index': c['index'], 'startMs': c['startMs'], 'endMs': c['endMs'],
                       'textBytes': len(c['text'].encode())} for c in chunks],
