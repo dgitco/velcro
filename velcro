@@ -699,14 +699,15 @@ import_volume() {
 
 # macOS lets only an app the user allowed read a removable drive. The import agent runs zsh, which
 # can never be allowed, so it sees the recorder's folder but can't list it. Log it every time and
-# notify once per plug-in (the agent looks again every few minutes).
+# notify once per plug-in (the agent looks again every few minutes; cmd_import forgets unplugged drives).
+UNREADABLE_SEEN=$SUPPORT/unreadable.seen
 unreadable_recorder() {
-  local mp=$1 device=$2 seen=$SUPPORT/unreadable.seen key
+  local mp=$1 device=$2 key
   log "import: can't read $device: macOS doesn't let this background task read removable drives"
-  key="$(volume_id "$mp")$SEP$(stat -f %m "$mp" 2>/dev/null)"
-  [[ -f $seen ]] && grep -qxF -- "$key" "$seen" && return 0
-  print -r -- "$key" >>"$seen"
-  notify "Can't import from $device: macOS lets only velcro.app read it. Open velcro.app, then unplug and plug in the recorder again."
+  key=$(volume_id "$mp") || return 0
+  [[ -f $UNREADABLE_SEEN ]] && grep -qxF -- "$key" "$UNREADABLE_SEEN" && return 0
+  print -r -- "$key" >>"$UNREADABLE_SEEN"
+  notify "Can't import from $device in the background: macOS lets only velcro.app read removable drives. Open velcro.app (it imports while it runs), then plug in the recorder again."
 }
 
 # Selected files use the recorder's copy, queue and manifest path, but keep their originals.
@@ -867,7 +868,7 @@ cmd_import() {
   [[ -n $auto && $# == 0 && -z $(setting recorder) && ${#waiting} == 0 ]] && return 0
   # While velcro.app runs, it imports: macOS lets it read the recorder, and never the agent's zsh.
   # Taking the lock here would leave the app waiting on an import that can't see any recordings.
-  [[ -n $auto && $# == 0 && -z $VELCRO_APP ]] && pgrep -qf "$APP_EXEC" && return 0
+  [[ -n $auto && $# == 0 && -z $VELCRO_APP ]] && pgrep -qf -U $UID "$APP_EXEC" && return 0
   mkdir -p "$CONF_DIR" "$SUPPORT" "${LOG:h}"
   # One import at a time, separate from the reconnect lock so shares keep coming back meanwhile.
   # A second request (say, the NAS remounting mid-import) asks the running one to look again.
@@ -892,6 +893,12 @@ cmd_import() {
       selected=; auto=1; set --
     elif [[ -z $auto ]] || is_on import.auto; then
       if (( $# )); then vols=("$@"); else vols=("${(@f)$(local_volumes)}"); fi
+      # A drive that was unplugged gets its "can't read" notification again when it comes back.
+      if (( ! $# )) && [[ -s $UNREADABLE_SEEN ]]; then
+        local -a mounted_ids=()
+        for mp in $vols; do [[ -n $mp ]] && mounted_ids+=("$(volume_id "$mp")"); done
+        print -rl -- ${(@)${(f)"$(<$UNREADABLE_SEEN)"}:*mounted_ids} >"$UNREADABLE_SEEN"
+      fi
       for mp in $vols; do
         [[ -n $mp ]] || continue
         if is_recorder "$mp"; then
