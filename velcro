@@ -7,7 +7,7 @@ zmodload zsh/system
 zmodload zsh/zselect
 zmodload zsh/datetime
 
-VERSION=0.10.3
+VERSION=0.10.4
 SELF=${0:A}
 LABEL=io.github.dgitco.velcro
 CONF_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/velcro
@@ -255,8 +255,8 @@ cmd_install() {
     ln -sfh "$SELF" "$BIN" && print "linked: $BIN → $SELF"
     print "velcro.app reconnects your shares while it runs (it can start at login)"
     # Importing stays with launchd: a recorder plugged in while the app is quit, crashed or not yet
-    # started after a restart is otherwise never imported, and nothing says so. The import lock keeps
-    # it and the app from copying at the same time.
+    # started after a restart is otherwise never imported, and nothing says so. While the app runs,
+    # the agent leaves importing to it (see cmd_import).
     install_import_agent
   else
     # Replace, don't write through: $BIN may be a link into velcro.app.
@@ -684,9 +684,29 @@ import_volume() {
     [[ -d $root ]] || { log "import: no $sub folder on $device"; return 0; }
   fi
   files=("$root"/**/${~pat})
-  (( ${#files} )) || { log "import: nothing to import on $device${sub:+ in $sub}"; return 0; }
+  if (( ! ${#files} )); then
+    # A folder macOS won't let us read globs to nothing too: say so instead of "nothing to import".
+    if ! /bin/ls -- "$root" >/dev/null 2>&1; then
+      unreadable_recorder "$mp" "$device"
+      return 1
+    fi
+    log "import: nothing to import on $device${sub:+ in $sub}"
+    return 0
+  fi
 
   import_recordings "$device" "$uuid" "$mp" "${files[@]}"
+}
+
+# macOS lets only an app the user allowed read a removable drive. The import agent runs zsh, which
+# can never be allowed, so it sees the recorder's folder but can't list it. Log it every time and
+# notify once per plug-in (the agent looks again every few minutes).
+unreadable_recorder() {
+  local mp=$1 device=$2 seen=$SUPPORT/unreadable.seen key
+  log "import: can't read $device: macOS doesn't let this background task read removable drives"
+  key="$(volume_id "$mp")$SEP$(stat -f %m "$mp" 2>/dev/null)"
+  [[ -f $seen ]] && grep -qxF -- "$key" "$seen" && return 0
+  print -r -- "$key" >>"$seen"
+  notify "Can't import from $device: macOS lets only velcro.app read it. Open velcro.app, then unplug and plug in the recorder again."
 }
 
 # Selected files use the recorder's copy, queue and manifest path, but keep their originals.
@@ -845,6 +865,9 @@ cmd_import() {
   # Quick exit for the LaunchAgent, which runs this on every mount of anything.
   local -a waiting=("$QUEUE"/[^.]*(N.[1]))
   [[ -n $auto && $# == 0 && -z $(setting recorder) && ${#waiting} == 0 ]] && return 0
+  # While velcro.app runs, it imports: macOS lets it read the recorder, and never the agent's zsh.
+  # Taking the lock here would leave the app waiting on an import that can't see any recordings.
+  [[ -n $auto && $# == 0 && -z $VELCRO_APP ]] && pgrep -qf "$APP_EXEC" && return 0
   mkdir -p "$CONF_DIR" "$SUPPORT" "${LOG:h}"
   # One import at a time, separate from the reconnect lock so shares keep coming back meanwhile.
   # A second request (say, the NAS remounting mid-import) asks the running one to look again.
