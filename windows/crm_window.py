@@ -59,6 +59,8 @@ def _show():
         address = v.crm.server_url(url.get().strip())
         return v.crm.Client(address, state=v.state_dir()), v.crm.Pending(address, state=v.state_dir())
 
+    notices = []
+
     def work(action, done=lambda result: None):
         if busy[0]:
             return
@@ -66,6 +68,7 @@ def _show():
         for widget in controls:
             widget.configure(state='disabled')
         status.set('처리 중…')
+        notices.clear()
         def run():
             try:
                 messages.put((True, action(), done))
@@ -79,7 +82,9 @@ def _show():
         try:
             ok, result, done = messages.get_nowait()
             if ok == 'notice':
-                status.set(result)
+                # Keep every line (the approval code comes first and must stay visible).
+                notices.append(result)
+                status.set('\n'.join(notices))
                 root.after(100, drain)
                 return
             busy[0] = False
@@ -103,6 +108,9 @@ def _show():
         return client
 
     def connect():
+        if not v.get(v.read_settings(), 'crm.approve'):
+            status.set('승인 화면 주소가 없습니다. 설정 파일에 crm.approve 를 넣은 뒤 연결하세요.')
+            return
         try:
             client = save()
             work(lambda: client.connect(output=lambda text: messages.put(('notice', text, None))), lambda _: refresh())

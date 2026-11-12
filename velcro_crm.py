@@ -340,7 +340,7 @@ class Client:
             if status == 'expired':
                 break
             token, expires_at = result.get('token'), result.get('expiresAt')
-            if status != 'approved' or not isinstance(token, str) or not token.startswith('taxyop_') or '\n' in token or '\r' in token:
+            if status != 'approved' or not isinstance(token, str) or '\n' in token or '\r' in token:
                 raise CRMError('CRM 기기 승인 응답이 올바르지 않습니다.')
             if expires_at is not None:
                 try:
@@ -449,6 +449,10 @@ class Client:
                     target = urllib.parse.urlsplit(url)
                     if (target.scheme != 'https' and not (target.scheme == 'http' and target.hostname in ('localhost', '127.0.0.1', '::1'))) \
                             or target.username or target.password or not target.hostname or not isinstance(headers, dict):
+                        raise ValueError()
+                    # The signed PUT must carry this file's own checksum, so storage rejects any other bytes.
+                    checksum = base64.b64encode(digest.digest()).decode()
+                    if [v for k, v in headers.items() if str(k).lower() == 'x-amz-checksum-sha256'] != [checksum]:
                         raise ValueError()
             except (KeyError, TypeError, ValueError):
                 raise CRMError('CRM 파일 생성 응답이 올바르지 않습니다.') from None

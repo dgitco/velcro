@@ -1,5 +1,6 @@
-import base64
 """CRM HTTP contracts and permission boundaries; synthetic files, local HTTP only."""
+import base64
+import hashlib
 import contextlib
 import ctypes
 import datetime
@@ -26,7 +27,7 @@ import velcro_crm as crm
 import velcro_win as win
 import crm_window
 
-TOKEN = 'taxyop_synthetic_test_credential'
+TOKEN = 'example_synthetic_test_credential'
 SECRET = 'synthetic-device-secret'
 TOKEN_EXPIRY = '2099-01-01T00:00:00Z'
 LEAD = 'lead-synthetic'
@@ -140,8 +141,12 @@ class CRMTest(unittest.TestCase):
     def reply(self, method, path, status, body=b'', headers=None):
         self.responses.setdefault((method, path), []).append((status, body, headers or {}))
 
-    def created(self, **changes):
-        body = {'file': {'id': FILE}, 'upload': {'url': self.url + '/storage', 'headers': {'X-Signed': 'synthetic'}}}
+    def checksum(self, path=None):
+        return base64.b64encode(hashlib.sha256(Path(path or self.file).read_bytes()).digest()).decode()
+
+    def created(self, checksum=None, **changes):
+        headers = {'X-Signed': 'synthetic', 'x-amz-checksum-sha256': checksum or self.checksum()}
+        body = {'file': {'id': FILE}, 'upload': {'url': self.url + '/storage', 'headers': headers}}
         body.update(changes)
         self.reply('POST', BASE, 201, body)
 
@@ -297,11 +302,23 @@ class CRMTest(unittest.TestCase):
         self.assertEqual(self.calls[1][2], self.file.read_bytes())
         self.assertNotIn('Authorization', self.calls[1][3])
         self.assertEqual(self.calls[1][3]['X-Signed'], 'synthetic')
+        self.assertEqual({k.lower(): v for k, v in self.calls[1][3].items()}['x-amz-checksum-sha256'], self.checksum())
         history = list(crm.records(self.client.state / 'crm-sent.jsonl'))
         self.assertEqual(history, [result])
         self.assertEqual(set(result), {'sha256', 'leadId', 'fileId', 'at', 'already', 'url'})
         self.assertTrue(self.client.send(self.file, LEAD)['already'])
         self.assertEqual(len(self.calls), 3)
+
+    def test_signed_put_must_carry_this_files_checksum(self):
+        # A create answer whose checksum header is missing or belongs to other bytes is refused before any PUT.
+        self.reply('POST', BASE, 201, {'file': {'id': FILE}, 'upload': {'url': self.url + '/storage', 'headers': {'X-Signed': 'synthetic'}}})
+        with self.assertRaisesRegex(crm.CRMError, '생성 응답'):
+            self.client.send(self.file, LEAD)
+        self.created(checksum=base64.b64encode(b'\0' * 32).decode())
+        with self.assertRaisesRegex(crm.CRMError, '생성 응답'):
+            self.client.send(self.file, LEAD)
+        self.assertEqual([x[0] for x in self.calls], ['POST', 'POST'])
+        self.assertEqual(list(crm.records(self.client.state / 'crm-sent.jsonl')), [])
 
     def test_create_already_uploaded_skips_put_and_complete(self):
         self.reply('POST', BASE, 200, {'file': {'id': FILE}, 'alreadyUploaded': True})

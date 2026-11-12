@@ -209,11 +209,12 @@ def main():
             if update.get("v"):
                 items.insert(0, (ID_UPDATE, f"Update to {update['v']} (download)"))
             s = v.read_settings()
-            try:
-                pending_count = len(v.crm_pending(s))
-            except (v.crm.CRMError, OSError):
-                pending_count = 0
-            items += [(ID_CRM, f"CRM 에 붙이기 ({pending_count}) · 연결 / 끊기")]
+            if v.get(s, "crm.url"):  # hidden until a CRM address is set, like the Mac menu
+                try:
+                    pending_count = len(v.crm_pending(s))
+                except (v.crm.CRMError, OSError):
+                    pending_count = 0
+                items += [(ID_CRM, f"CRM 에 붙이기 ({pending_count}) · 연결 / 끊기")]
             drives[:] = [d for d in v.removable_drives() if not v.is_recorder(s, d[1], d[2]) and not v.holds_backups(d[0], s)]
             items += [(ID_ADD + i, f"Use {r[:2]} {l or '(no name)'} as recorder") for i, (r, l, sn) in enumerate(drives)]
             items += [(ID_SETTINGS, "Open settings file"), (ID_RELOAD, "Reload settings (shortcut)"), (ID_LOG, "Open log"), (ID_QUIT, "Quit")]

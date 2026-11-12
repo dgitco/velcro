@@ -199,6 +199,7 @@ Configure your CRM server, then approve **file uploads to sales cards only** in 
 
 ```sh
 velcro set crm.url https://api.example.com
+velcro set crm.approve https://auth.example.com/device/
 velcro crm connect --name "My computer"
 velcro crm leads
 velcro crm send ~/Recordings/memo.wav --lead <card-id>
@@ -211,8 +212,8 @@ Already sent content for the same card is skipped. Disconnect removes the local 
 server token in the dashboard too.
 
 After `crm.url` is configured, newly imported recordings enter a local **CRM 에 붙이기** queue.
-This never uploads them automatically. On Windows, open **CRM 에 붙이기 (N) · 연결 / 끊기** from
-the tray, select a card separately for each recording (none is preselected), then choose **올리기** or
+This never uploads them automatically. On Windows, once `crm.url` is set, open **CRM 에 붙이기 (N) · 연결 / 끊기** from
+the tray (the item is hidden until then; connecting also needs `crm.approve`), select a card separately for each recording (none is preselected), then choose **올리기** or
 **건너뛰기**. The same window has the server address and connect/disconnect controls. The Mac CLI
 can show `velcro crm pending` and upload chosen files; a Mac app selection window is a later change.
 Windows source users can run `python windows/velcro_win.py crm …`; standalone Python users can run
@@ -229,6 +230,7 @@ for the server contract assumptions and retry behavior.
 | Key | Default | |
 |---|---|---|
 | `crm.url` | | CRM server origin, e.g. `https://api.example.com`; no default |
+| `crm.approve` | | browser approval page, e.g. `https://auth.example.com/device/`; `connect` opens it with `?code=` |
 | `import.dest` | | folder for recordings |
 | `import.ext` | `wav mp3 m4a aac flac wma ogg` | file types to take |
 | `import.folder` | | only this folder on the recorder, like `RECORD`; set it if the recorder also holds music |

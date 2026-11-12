@@ -60,7 +60,7 @@ The device connection follows the supplied server contract:
 | --- | --- |
 | `POST /api/operator-auth/device/start` with `{scope:"sales_file_upload",displayName?:string}`; no other keys | `201 {userCode,deviceSecret,expiresAt,interval}`; expiry is an ISO timestamp, interval is seconds |
 | Browser approval | `crm.approve` + `?code=<formatted userCode>`; no default page |
-| `POST /api/operator-auth/device/poll` with `{userCode,deviceSecret}` | `200 {status:"pending"\|"approved"\|"denied"\|"expired",token?:"taxyop_…",expiresAt?:"<token expiry ISO>"}`; unknown code or wrong secret returns `404` |
+| `POST /api/operator-auth/device/poll` with `{userCode,deviceSecret}` | `200 {status:"pending"\|"approved"\|"denied"\|"expired",token?:"<opaque token>",expiresAt?:"<token expiry ISO>"}`; unknown code or wrong secret returns `404` |
 | `GET /api/rpc/session/whoami` with bearer | HTTP 2xx confirms the connection; its body is not printed |
 
 Pending polls wait `interval` seconds, up to the start response's absolute
@@ -111,7 +111,13 @@ manifests are not backfilled. CRM queue errors do not change verified import or
 source-deletion decisions. Nothing changes recording engines, hooks, timers or
 destination settings. A user may always send a file explicitly from the CLI.
 
-The Windows window never preselects a card. An empty card selection cannot call
+The signed PUT must carry the file's own `x-amz-checksum-sha256` (base64 of the
+SHA-256 the client computed); a create answer whose header is missing or different
+is refused before any bytes are sent, so storage cannot accept other content.
+
+The Windows tray item appears only after `crm.url` is set, and the window refuses
+to connect until `crm.approve` is set; the approval code stays on screen while
+connecting. The Windows window never preselects a card. An empty card selection cannot call
 the upload client. Failed uploads remain pending. Skipping writes a local event
 and sends nothing. macOS Swift screens are outside this change.
 
