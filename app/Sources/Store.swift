@@ -29,6 +29,11 @@ final class Store: ObservableObject {
     @Published private(set) var paused = false
     /// Paths and version from `velcro env`: CONF, PAUSE, LOG, BIN, SELF, VERSION.
     @Published private(set) var env: [String: String] = [:]
+    @Published var crmPending: [CRMRecording] = []
+    @Published var crmConnecting = false
+    @Published var crmCode = ""
+    @Published var crmNotice = ""
+    @Published var crmWorking = false
 
     private var refreshing = false
     private var refreshAgain = false
@@ -94,6 +99,7 @@ final class Store: ObservableObject {
             values[String(line[..<eq]), default: []].append(String(line[line.index(after: eq)...]))
         }
         settings = values
+        await refreshCRMPending()
     }
 
     /// `velcro set <key> <values...>`; no values puts the default back.
@@ -115,6 +121,7 @@ final class Store: ObservableObject {
             refreshAgain = false
             apply(await CLI.run("scan", "fast"))
             await reloadSettingsIfChanged()
+            await refreshCRMPending()
         } while refreshAgain
     }
 

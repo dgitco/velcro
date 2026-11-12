@@ -34,7 +34,7 @@ enum SettingsWindow {
 final class SettingsModel: ObservableObject {
     static let shared = SettingsModel()
 
-    enum Tab { case shares, imports, send, general }
+    enum Tab { case shares, imports, send, crm, general }
 
     @Published var tab = Tab.shares
     /// The share being added or edited, shown as a sheet.
@@ -58,6 +58,7 @@ struct SettingsView: View {
                 Text("Shares").tag(SettingsModel.Tab.shares)
                 Text("Import").tag(SettingsModel.Tab.imports)
                 Text("Send").tag(SettingsModel.Tab.send)
+                Text("CRM").tag(SettingsModel.Tab.crm)
                 Text("General").tag(SettingsModel.Tab.general)
             }
             .pickerStyle(.segmented)
@@ -69,6 +70,7 @@ struct SettingsView: View {
             case .shares: SharesPane().padding(20)
             case .imports: ImportPane()
             case .send: SendPane()
+            case .crm: CRMPane()
             case .general: GeneralPane()
             }
         }

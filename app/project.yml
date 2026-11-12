@@ -39,6 +39,11 @@ targets:
       # Transcribes, tidies and delivers imported recordings for "velcro recordings".
       - path: ../velcro-recordings
         buildPhase: resources
+      # Shared CRM command and module used by the CRM screens.
+      - path: ../velcro-crm
+        buildPhase: resources
+      - path: ../velcro_crm.py
+        buildPhase: resources
     dependencies:
       # Reads files with the cache off to verify copies on network shares; lands in Contents/MacOS.
       - target: velcro-sha

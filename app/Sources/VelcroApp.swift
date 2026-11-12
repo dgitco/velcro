@@ -99,6 +99,12 @@ struct MenuContent: View {
         ClipMenu()
         TranscribeMenu()
 
+        if !store.setting("crm.url").isEmpty {
+            Divider()
+            Button("CRM 에 붙이기 (\(store.crmPending.count))") { CRMWindow.show() }
+                .disabled(store.crmPending.isEmpty)
+        }
+
         Divider()
         if store.paused {
             Button("Resume") { Task { await store.resume() } }
