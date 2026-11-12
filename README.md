@@ -214,8 +214,10 @@ server token in the dashboard too.
 After `crm.url` is configured, newly imported recordings enter a local **CRM 에 붙이기** queue.
 This never uploads them automatically. On Windows, once `crm.url` is set, open **CRM 에 붙이기 (N) · 연결 / 끊기** from
 the tray (the item is hidden until then; connecting also needs `crm.approve`), select a card separately for each recording (none is preselected), then choose **올리기** or
-**건너뛰기**. The same window has the server address and connect/disconnect controls. The Mac CLI
-can show `velcro crm pending` and upload chosen files; a Mac app selection window is a later change.
+**건너뛰기**. The same window has the server address and connect/disconnect controls. On a Mac,
+the menu bar shows **CRM 에 붙이기 (N)** once `crm.url` is set; the window works the same way, and
+Settings → CRM holds the server and approval-page addresses and connect/disconnect. The CLI can also
+show `velcro crm pending` and upload chosen files.
 Windows source users can run `python windows/velcro_win.py crm …`; standalone Python users can run
 `./velcro-crm …`. The helper and `velcro_crm.py` must stay together.
 
