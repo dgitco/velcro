@@ -119,7 +119,8 @@ The Windows tray item appears only after `crm.url` is set, and the window refuse
 to connect until `crm.approve` is set; the approval code stays on screen while
 connecting. The Windows window never preselects a card. An empty card selection cannot call
 the upload client. Failed uploads remain pending. Skipping writes a local event
-and sends nothing. macOS Swift screens are outside this change.
+and sends nothing. The Mac app (menu, window, Settings → CRM) only runs these
+`velcro crm` commands; it has no network or credential code of its own.
 
 ## Verification
 
@@ -130,5 +131,5 @@ executor that prohibits loopback sockets. It covers authentication, retries,
 response unions, permission errors, history, origin separation, local-only
 queueing and credential output suppression. Windows Cred* calls are replaced by
 fake functions for ctypes adapter tests; this does not establish behavior on
-actual Windows. Native Keychain, Windows packaging/tray rendering and the Mac
-app bundle still require platform validation.
+actual Windows. Windows packaging/tray rendering still require validation on Windows; the Keychain
+write and the Mac app were checked on a test Mac.
