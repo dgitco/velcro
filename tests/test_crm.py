@@ -697,7 +697,7 @@ class LocalContracts(unittest.TestCase):
                     if decision == 'pending':
                         moved, = pending.items()
                         self.assertEqual(moved['key'], item['key'])
-                        self.assertEqual(moved['path'], str(dest / (decision + '-2.wav')))
+                        self.assertEqual(moved['path'], str((dest / (decision + '-2.wav')).resolve()))
                     else:
                         self.assertEqual(pending.items(), [])
                     self.assertFalse(Path(item['path']).exists())
