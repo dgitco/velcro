@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""velcro-crm: shared CRM command (stdlib only)."""
+from velcro_crm import main
+
+if __name__ == '__main__':
+    raise SystemExit(main())

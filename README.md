@@ -193,12 +193,44 @@ velcro recordings run                                  # do it now (a timer runs
 - **Failures.** A step that fails is tried again after 10, 20, 40 minutes and so on, at most 6 hours apart, without redoing the steps before it. From the third failure, `recordings.alert` (a command) runs with one line of text, at most once a day per file (or import) and step. Other recordings carry on meanwhile.
 - One run at a time; a run starts no new step after 40 minutes, the next run picks up. `recordings.since` skips everything imported before a date, so a new setup doesn't redo old recordings.
 
+## Attach files to a CRM card
+
+Configure your CRM server, then approve **file uploads to sales cards only** in the browser:
+
+```sh
+velcro set crm.url https://api.example.com
+velcro set crm.approve https://auth.example.com/device/
+velcro crm connect --name "My computer"
+velcro crm leads
+velcro crm send ~/Recordings/memo.wav --lead <card-id>
+velcro crm disconnect
+```
+
+There is no default server. `leads --json` returns recent cards; if the server does not offer that endpoint,
+paste a card address into `--lead`. Supported files are M4A, MP3, WAV, TXT, MD and PDF, up to 200 MiB.
+Already sent content for the same card is skipped. Disconnect removes the local credential; revoke the
+server token in the dashboard too.
+
+After `crm.url` is configured, newly imported recordings enter a local **CRM 에 붙이기** queue.
+This never uploads them automatically. On Windows, once `crm.url` is set, open **CRM 에 붙이기 (N) · 연결 / 끊기** from
+the tray (the item is hidden until then; connecting also needs `crm.approve`), select a card separately for each recording (none is preselected), then choose **올리기** or
+**건너뛰기**. The same window has the server address and connect/disconnect controls. The Mac CLI
+can show `velcro crm pending` and upload chosen files; a Mac app selection window is a later change.
+Windows source users can run `python windows/velcro_win.py crm …`; standalone Python users can run
+`./velcro-crm …`. The helper and `velcro_crm.py` must stay together.
+
+Credentials stay in macOS Keychain, Windows Credential Manager, or a private Linux state file.
+The shared helper needs Python 3 and only its standard library. See [the CRM protocol and local state](docs/crm.md)
+for the server contract assumptions and retry behavior.
+
 ## Settings
 
 `velcro settings` shows them all; `velcro set <key> [value ...]` changes one, and `velcro set <key>` puts the default back. They're kept in `~/.config/velcro/settings`:
 
 | Key | Default | |
 |---|---|---|
+| `crm.url` | | CRM server origin, e.g. `https://api.example.com`; no default |
+| `crm.approve` | | browser approval page, e.g. `https://auth.example.com/device/`; `connect` opens it with `?code=` |
 | `import.dest` | | folder for recordings |
 | `import.ext` | `wav mp3 m4a aac flac wma ogg` | file types to take |
 | `import.folder` | | only this folder on the recorder, like `RECORD`; set it if the recorder also holds music |
@@ -254,7 +286,7 @@ velcro.app runs that pass itself when the network changes, when the Mac wakes, a
 
 **What will macOS ask me to allow?** Notifications (import and send results) and Login Items (start at login). The first import or send may ask to open files on a removable or network volume. Turning on Mac Mic asks for the microphone, once: from 0.7.1 updates keep that answer (0.7.0 and earlier asked again after each update). No Full Disk Access, Accessibility, or Screen Recording.
 
-**Does velcro see my passwords?** No. Share passwords stay in your keychain and macOS uses them to mount. velcro has no tokens or keys of its own. `velcro transcribe` reads your Claude Code login while it runs, to send the audio to Anthropic as Claude Code would, and nothing else.
+**Does velcro see my passwords?** No. Share passwords stay in your keychain and macOS uses them to mount. CRM device tokens stay in your OS credential store (a private state file on Linux); they are never printed. `velcro transcribe` reads your Claude Code login while it runs, to send the audio to Anthropic as Claude Code would, and nothing else.
 
 **What does it do with my clipboard?** It lists the last four images or files you copied. Copied images are kept in `~/Library/Application Support/velcro/clips` until they drop off the list or velcro quits; items password managers mark as private are skipped. It only writes to the clipboard when you pick something to send. With Mac Clipboard on, copied images (only images) also go to the server you chose, over SSH.
 

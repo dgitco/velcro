@@ -5,10 +5,14 @@
 Python standard library only. Everything below `Windows layer` is portable so it can be tested on Linux.
 
   python velcro_win.py import [DRIVE_ROOT ...]   import now (all registered recorders when none given)
+  python velcro_win.py crm connect | disconnect | leads [--json] | send FILE --lead ID
   python velcro_win.py run                        watch for recorders being plugged in
   python velcro_win.py set KEY VALUE | settings | recorder add ROOT
 """
 import hashlib, json, os, shutil, sys, threading, time, wave, datetime
+# Source checkout and PyInstaller both import the same portable module.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import velcro_crm as crm
 
 VERSION = "0.2.2"  # windows-v<VERSION> on GitHub releases
 RELEASES = "https://api.github.com/repos/dgitco/velcro/releases?per_page=30"
@@ -97,15 +101,33 @@ def manifest_lines(dest):
         return []
 
 
-def manifest_add(dest, name, original, size, sha, at, device, uuid, secs):
+def manifest_add(dest, name, original, size, sha, at, device, uuid, secs, settings=None, previous=None):
     """Append one line unless this file+size+hash is already listed. Key order matches the Mac."""
     for e in manifest_lines(dest):
         if e.get("file") == name and e.get("size") == size and e.get("sha256") == sha:
+            if previous:
+                crm_enqueue(settings if settings is not None else read_settings(), os.path.join(dest, name), sha, at, secs, previous=previous)
             return
     line = {"file": name, "size": size, "sha256": sha, "imported_at": at, "device": device,
             "device_uuid": uuid, "original": original, "duration_s": secs}
     with open(os.path.join(dest, MANIFEST), "a", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n")
+    crm_enqueue(settings if settings is not None else read_settings(), os.path.join(dest, name), sha, at, secs, previous=previous)
+
+
+def crm_enqueue(s, path, sha, at, secs, previous=None):
+    if get(s, "crm.url"):
+        try:
+            crm.Pending(get(s, "crm.url"), state=state_dir()).add(path, sha, at, secs, previous=previous)
+        except (crm.CRMError, OSError):
+            # CRM bookkeeping never changes the verified import or deletes a recording.
+            return False
+    return True
+
+
+def crm_pending(s=None):
+    url = get(s if s is not None else read_settings(), "crm.url")
+    return crm.Pending(url, state=state_dir()).items() if url else []
 
 
 def put_verified(src, dest_dir, want=None):
@@ -232,8 +254,9 @@ def _import_volume(root, s, device=None, uuid="", log=print):
             if not os.path.exists(meta):
                 with open(meta, "w", encoding="utf-8") as m:
                     m.write(SEP.join([os.path.basename(f), str(os.path.getsize(f)), sha, at, device, uuid, "" if secs is None else str(secs)]))
+            crm_enqueue(s, os.path.join(d, name), sha, at, secs)
         else:
-            manifest_add(d, name, os.path.basename(f), os.path.getsize(f), sha, at, device, uuid, secs)
+            manifest_add(d, name, os.path.basename(f), os.path.getsize(f), sha, at, device, uuid, secs, settings=s)
         ok.append(f)
         log(f"import: {f} -> {d}\\{name} ({sha})" if os.name == "nt" else f"import: {f} -> {d}/{name} ({sha})")
     if failed:
@@ -270,8 +293,9 @@ def _import_files(files, s, log=print):
         if queued:
             with open(os.path.join(d, ".meta", name), "w", encoding="utf-8") as m:
                 m.write(SEP.join([os.path.basename(f), str(os.path.getsize(f)), sha, at, "Manual upload", "", "" if secs is None else str(secs)]))
+            crm_enqueue(s, os.path.join(d, name), sha, at, secs)
         else:
-            manifest_add(d, name, os.path.basename(f), os.path.getsize(f), sha, at, "Manual upload", "", secs)
+            manifest_add(d, name, os.path.basename(f), os.path.getsize(f), sha, at, "Manual upload", "", secs, settings=s)
         ok += 1
         log(f"import: {f} -> {d}")
     return ok, failed
@@ -312,7 +336,7 @@ def _flush_queue(s, log=print):
         if not r:
             continue
         n, h, _ = r
-        manifest_add(dest, n, orig, os.path.getsize(src), h, at, device, uuid, float(secs) if secs else None)
+        manifest_add(dest, n, orig, os.path.getsize(src), h, at, device, uuid, float(secs) if secs else None, settings=s, previous=src)
         os.remove(src)
         if os.path.exists(meta):
             os.remove(meta)
@@ -442,6 +466,8 @@ def run_loop(log=print, every=3, on_new=None):
 def main(argv):
     s = read_settings()
     cmd = argv[0] if argv else "help"
+    if cmd == "crm":
+        return crm.main(["--url", get(s, "crm.url"), *argv[1:]])
     if cmd == "import":
         roots = argv[1:]
         if not roots:
@@ -451,6 +477,12 @@ def main(argv):
     elif cmd == "run":
         run_loop()
     elif cmd == "set" and len(argv) >= 3:
+        if argv[1] == "crm.url":
+            try:
+                crm.server_url(" ".join(argv[2:]))
+            except crm.CRMError as e:
+                print(str(e))
+                return 2
         if argv[1] == "record.hotkey" and not parse_hotkey(" ".join(argv[2:])):
             print("record.hotkey is modifiers plus one key, like ctrl+alt+r")
             return 2
