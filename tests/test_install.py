@@ -89,5 +89,43 @@ class Install(unittest.TestCase):
         self.assertNotIn(warning, r.stdout)
 
 
+    def recorder(self):
+        """A folder standing in for a plugged-in recorder, with diskutil reporting its volume ID."""
+        conf = self.home / '.config/velcro'
+        conf.mkdir(parents=True)
+        (conf / 'settings').write_text('recorder=uuid:0000-TEST VOICE\nimport.folder=RECORD\n'
+                                       f'import.dest={self.home}/Recordings\n')
+        (self.home / 'Recordings').mkdir()
+        vol = self.tmp / 'VOICE'
+        (vol / 'RECORD').mkdir(parents=True)
+        (vol / 'RECORD/20261110115038.WAV').write_bytes(b'RIFF')
+        self.stub('diskutil', 'cat <<EOF\n<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>'
+                              '<key>VolumeUUID</key><string>0000-TEST</string>'
+                              '<key>VolumeName</key><string>VOICE</string></dict></plist>\nEOF\n')
+        return vol
+
+    def test_import_agent_leaves_importing_to_the_running_app(self):
+        # The agent's zsh can't read a removable drive; holding the lock would leave the app waiting.
+        self.recorder()
+        self.stub('pgrep', 'exit 0\n')  # velcro.app is running
+        r = self.velcro(ROOT / 'velcro', 'import', '--auto')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.home / '.config/velcro/.import.lock').exists())
+
+    def test_unreadable_recorder_is_not_reported_as_empty(self):
+        vol = self.recorder()
+        (vol / 'RECORD').chmod(0)
+        self.addCleanup((vol / 'RECORD').chmod, 0o755)
+        for _ in range(2):
+            self.velcro(ROOT / 'velcro', 'import', str(vol))
+        log = (self.home / 'Library/Logs/velcro.log').read_text()
+        self.assertNotIn('nothing to import', log)
+        self.assertEqual(log.count("import: can't read VOICE"), 2, log)
+        # Notified once per plug-in, not on every look.
+        self.assertEqual(log.count("Can't import from VOICE"), 1, log)
+        (vol / 'RECORD').chmod(0o755)
+        self.assertTrue((vol / 'RECORD/20261110115038.WAV').exists())
+
+
 if __name__ == '__main__':
     unittest.main()
