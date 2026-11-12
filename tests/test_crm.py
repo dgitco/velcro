@@ -10,6 +10,7 @@ import logging
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -514,6 +515,7 @@ class LocalContracts(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
 
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'the private state file is the Linux credential store')
     def test_linux_private_token_and_delete(self):
         store = crm.TokenStore('https://api.example.com', self.root / 'state')
         self.assertIsNone(store.get())
@@ -528,6 +530,7 @@ class LocalContracts(unittest.TestCase):
         self.assertIsNone(store.get())
         self.assertIsNone(crm.TokenStore('https://other.example.com', self.root / 'state').get())
 
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'the private state file is the Linux credential store')
     def test_token_expiry_boundary_and_legacy_credential(self):
         store = crm.TokenStore('https://api.example.com', self.root / 'state')
         store.set(TOKEN, '2000-01-01T00:00:00Z')
@@ -608,6 +611,7 @@ class LocalContracts(unittest.TestCase):
                 crm.server_url(url)
         self.assertEqual(crm.server_url('https://api.example.com/'), 'https://api.example.com')
 
+    @unittest.skipIf(shutil.which('zsh') is None, 'needs zsh (the Mac/Linux command)')
     def test_zsh_settings_and_dispatch_use_throwaway_home(self):
         def run(*args):
             return subprocess.run(['zsh', str(ROOT / 'velcro'), *args], capture_output=True, text=True)
@@ -628,6 +632,7 @@ class LocalContracts(unittest.TestCase):
         self.assertEqual(crm.configured_setting('crm.approve'), '')
         self.assertNotEqual(run('crm', 'pending').returncode, 0)
 
+    @unittest.skipIf(shutil.which('zsh') is None, 'needs zsh (the Mac/Linux command)')
     def test_zsh_import_manifest_hook_is_local_and_opt_in(self):
         dest = self.root / 'Recordings'
         dest.mkdir()
@@ -667,7 +672,7 @@ class LocalContracts(unittest.TestCase):
             settings['crm.url'] = ['https://api.example.com']
             self.assertEqual(win.import_files([str(source)], settings, log=lambda _: None), (1, 0))
         pending, = win.crm_pending(settings)
-        self.assertEqual(pending['path'], str(dest / 'second.wav'))
+        self.assertEqual(pending['path'], str((dest / 'second.wav').resolve()))
         self.assertTrue(source.exists())
         self.assertEqual(pending['status'], 'pending')
 
@@ -681,7 +686,7 @@ class LocalContracts(unittest.TestCase):
                 with mock.patch.object(crm.Client, 'request', side_effect=AssertionError('No automatic network')):
                     self.assertEqual(win.import_files([str(source)], settings, log=lambda _: None), (1, 0))
                     item, = win.crm_pending(settings)
-                    self.assertEqual(item['path'], str(Path(win.queue_dir()) / source.name))
+                    self.assertEqual(item['path'], str((Path(win.queue_dir()) / source.name).resolve()))
                     pending = crm.Pending(settings['crm.url'][0], win.state_dir())
                     if decision != 'pending':
                         pending.finish(item, skipped=decision == 'skipped')
@@ -698,6 +703,7 @@ class LocalContracts(unittest.TestCase):
                     self.assertFalse(Path(item['path']).exists())
                     self.assertTrue(source.exists())
 
+    @unittest.skipIf(shutil.which('zsh') is None, 'needs zsh (the Mac/Linux command)')
     def test_zsh_spool_relocation_updates_existing_manifest_entry(self):
         config = self.root / 'config' / 'velcro'
         config.mkdir(parents=True)
