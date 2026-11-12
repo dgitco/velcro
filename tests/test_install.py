@@ -75,6 +75,11 @@ class Install(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assert_import_agent(r.stdout + r.stderr)
         self.assertTrue((self.home / 'Library/LaunchAgents/io.github.dgitco.velcro.plist').is_file())
+        # The installed CRM entry point must remain importable away from the checkout.
+        for name in ('velcro-crm', 'velcro_crm.py'):
+            self.assertTrue((self.home / '.local/bin' / name).is_file())
+        r = self.velcro(self.home / '.local/bin/velcro', 'crm', '--help')
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_status_says_when_nothing_imports_a_plugged_in_recorder(self):
         conf = self.home / '.config/velcro'

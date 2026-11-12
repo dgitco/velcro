@@ -8,7 +8,7 @@ u, k, sh = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.shell32
 WM_USER, WM_TRAY, WM_COMMAND, WM_DESTROY, WM_RBUTTONUP = 0x400, 0x401, 0x111, 0x2, 0x205
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
 NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO = 1, 2, 4, 0x10
-ID_IMPORT, ID_LOG, ID_SETTINGS, ID_QUIT, ID_RECORD, ID_RELOAD, ID_UPLOAD, ID_UPDATE, ID_ADD = 1, 2, 3, 4, 5, 6, 7, 8, 100  # ID_ADD+i: "Use drive i as recorder"
+ID_IMPORT, ID_LOG, ID_SETTINGS, ID_QUIT, ID_RECORD, ID_RELOAD, ID_UPLOAD, ID_UPDATE, ID_CRM, ID_ADD = 1, 2, 3, 4, 5, 6, 7, 8, 9, 100  # ID_ADD+i: "Use drive i as recorder"
 WM_HOTKEY, HOTKEY_ID = 0x312, 1
 mm = ctypes.windll.winmm
 LRESULT = ctypes.c_ssize_t
@@ -209,6 +209,11 @@ def main():
             if update.get("v"):
                 items.insert(0, (ID_UPDATE, f"Update to {update['v']} (download)"))
             s = v.read_settings()
+            try:
+                pending_count = len(v.crm_pending(s))
+            except (v.crm.CRMError, OSError):
+                pending_count = 0
+            items += [(ID_CRM, f"CRM 에 붙이기 ({pending_count}) · 연결 / 끊기")]
             drives[:] = [d for d in v.removable_drives() if not v.is_recorder(s, d[1], d[2]) and not v.holds_backups(d[0], s)]
             items += [(ID_ADD + i, f"Use {r[:2]} {l or '(no name)'} as recorder") for i, (r, l, sn) in enumerate(drives)]
             items += [(ID_SETTINGS, "Open settings file"), (ID_RELOAD, "Reload settings (shortcut)"), (ID_LOG, "Open log"), (ID_QUIT, "Quit")]
@@ -246,6 +251,9 @@ def main():
                 register_hotkey(hwnd)
             elif c == ID_LOG:
                 os.startfile(LOG) if os.path.exists(LOG) else None
+            elif c == ID_CRM:
+                import crm_window
+                threading.Thread(target=crm_window.show, daemon=True).start()
             elif c == ID_SETTINGS:
                 p = v.settings_path(); os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "a").close(); os.startfile(p)
             elif c == ID_QUIT:
