@@ -11,3 +11,5 @@ site/public/velcro-transcribe
 site/public/velcro-recordings
 __pycache__/
 *.p12
+site/public/velcro-crm
+site/public/velcro_crm.py
