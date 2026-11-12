@@ -1,0 +1,38 @@
+name: Windows
+# Real-Windows check for the Windows tray and the shared CRM client: unit tests, a Credential
+# Manager round trip, and the PyInstaller build (the tray imports velcro_crm at start-up, so a
+# build that misses it would not start). Only when those files change.
+on:
+  pull_request:
+    paths:
+      - "windows/**"
+      - "velcro_crm.py"
+      - "tests/test_crm.py"
+      - "tests/test_windows_import.py"
+      - ".github/workflows/windows.yml"
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        run: python -m unittest -v tests.test_windows_import tests.test_crm
+      - name: Credential Manager round trip (real Cred* calls, throwaway origin)
+        run: |
+          python -c "import velcro_crm as c; s = c.TokenStore('https://selftest.example.com'); s.set('selftest-value', None); assert s.get() == 'selftest-value'; s.delete(); assert s.get() is None; print('credential manager ok')"
+      - name: Build (windows/build.ps1)
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -q pyinstaller
+          Set-Location windows
+          python -m PyInstaller --onedir --noconsole --name velcro tray_win.py --paths . --paths ..
+          if (-not (Test-Path dist\velcro\velcro.exe)) { throw "no exe" }
+          if (-not (Select-String -Quiet -Pattern 'velcro_crm' build\velcro\xref-velcro.html)) { throw "velcro_crm missing from the build" }
+          if (-not (Select-String -Quiet -Pattern 'crm_window' build\velcro\xref-velcro.html)) { throw "crm_window missing from the build" }
+          "build ok"
