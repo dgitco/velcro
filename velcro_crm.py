@@ -4,6 +4,7 @@ No default server. Device credentials belong to the configured origin; neither H
 response bodies nor transport exceptions are displayed (they can contain secrets).
 """
 import argparse
+import base64
 import ctypes
 import datetime
 import hashlib
@@ -181,7 +182,13 @@ class TokenStore:
 
     def _read(self):
         if sys.platform == 'darwin':
-            return self._security('find-generic-password', '-s', 'velcro-crm', '-a', self.url, '-w', missing_ok=True)
+            value = self._security('find-generic-password', '-s', 'velcro-crm', '-a', self.url, '-w', missing_ok=True)
+            if value and value.startswith('b64:'):
+                try:
+                    return base64.b64decode(value[4:], validate=True).decode('utf-8')
+                except ValueError:
+                    return None
+            return value
         if sys.platform == 'win32':
             return self._windows('get')
         try:
@@ -207,7 +214,13 @@ class TokenStore:
     def set(self, token, expires_at=None):
         token = json.dumps({'token': token, 'expiresAt': expires_at}, separators=(',', ':'))
         if sys.platform == 'darwin':
-            self._security('add-generic-password', '-U', '-s', 'velcro-crm', '-a', self.url, '-w', token)
+            # The secret goes through stdin (security -i), never argv: argv is visible to other
+            # processes. base64 keeps the JSON's quotes away from security's line parser.
+            stored = 'b64:' + base64.b64encode(token.encode()).decode()
+            line = f'add-generic-password -U -s velcro-crm -a {self.url} -w {stored}\n'
+            subprocess.run(['security', '-i'], input=line.encode(), capture_output=True)
+            if self._read() != token:  # security -i does not report a failed command in its exit code
+                raise CRMError('키체인 작업 실패. 키체인을 잠금 해제하고 다시 시도하세요.')
         elif sys.platform == 'win32':
             self._windows('set', token)
         else:

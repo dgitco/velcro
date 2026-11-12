@@ -1,3 +1,4 @@
+import base64
 """CRM HTTP contracts and permission boundaries; synthetic files, local HTTP only."""
 import contextlib
 import ctypes
@@ -526,8 +527,10 @@ class LocalContracts(unittest.TestCase):
         store = crm.TokenStore('https://api.example.com', self.root)
         saved = []
         def fake_run(args, **kwargs):
-            if args[1] == 'add-generic-password':
-                saved.append(args[-1])
+            if args == ['security', '-i']:
+                words = kwargs['input'].decode().split()
+                self.assertEqual(words[:-1], ['add-generic-password', '-U', '-s', 'velcro-crm', '-a', store.url, '-w'])
+                saved.append(words[-1])
             return subprocess.CompletedProcess(args, 0, saved[-1].encode() if args[1] == 'find-generic-password' else b'', b'')
         with mock.patch.object(crm.sys, 'platform', 'darwin'), mock.patch.object(crm.subprocess, 'run', side_effect=fake_run) as run:
             store.set(TOKEN, TOKEN_EXPIRY)
@@ -536,8 +539,11 @@ class LocalContracts(unittest.TestCase):
                 with self.assertRaisesRegex(crm.CRMError, '다시 연결'):
                     store.get()
             store.delete()
-            self.assertEqual(run.call_args_list[0].args[0], ['security', 'add-generic-password', '-U', '-s', 'velcro-crm', '-a', store.url, '-w', saved[0]])
-            self.assertEqual(json.loads(saved[0]), {'token': TOKEN, 'expiresAt': TOKEN_EXPIRY})
+            self.assertEqual(run.call_args_list[0].args[0], ['security', '-i'])
+            # The token never appears in any process's arguments.
+            self.assertFalse(any(TOKEN in ' '.join(c.args[0]) for c in run.call_args_list))
+            self.assertTrue(saved[0].startswith('b64:'))
+            self.assertEqual(json.loads(base64.b64decode(saved[0][4:])), {'token': TOKEN, 'expiresAt': TOKEN_EXPIRY})
 
     def test_windows_credential_manager_fake_abi(self):
         """Exercise the ctypes adapter on Linux with fake Cred* calls, not the OS store."""
