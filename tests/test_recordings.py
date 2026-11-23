@@ -165,7 +165,7 @@ class Failures(Base):
 
     def test_backoff_doubles_and_alert_from_the_third_failure_once_a_day(self):
         self.add('x.WAV')
-        self.engine = script(self.bin / 'broken', 'echo boom >&2; exit 3\n')
+        self.engine = script(self.bin / 'broken', 'echo boom >&2; exit 1\n')
         alerts = self.tmp / 'alerts'
         alert = script(self.bin / 'alert', f'echo "$1" >> {alerts}\n')
         t = 1_800_000_000.0
@@ -411,6 +411,108 @@ class Done(Base):
         self.run_helper('--done', done)
         self.run_helper('--done', done)
         self.assertEqual(self.calls_made(), ['imp-1', 'imp-1'])
+
+
+class Silent(Base):
+    """An engine that exits 3 says the recording has no speech: done, never a failure, left out of the done hook."""
+
+    done_hook, calls_made, seen = Done.done_hook, Done.calls_made, Done.seen
+
+    def quiet_engine(self, pattern='*'):
+        """Exits 3 for recordings matching pattern, prints text for the rest."""
+        self.engine = script(self.bin / 'quiet', f'case "$1" in {pattern}) echo "no speech found" >&2; exit 3;; esac\n'
+                                                 'echo "heard: $(basename "$1")"\n')
+
+    def test_exit_3_writes_silent_json_and_is_not_retried_or_alerted(self):
+        rec = self.add('20261123132950.WAV')
+        self.quiet_engine()
+        alerts = self.tmp / 'alerts'
+        alert = script(self.bin / 'alert', f'echo "$1" >> {alerts}\n')
+        tidy = script(self.bin / 'tidy', f'touch {self.tmp / "tidied"}; echo t\n')
+        deliver = script(self.bin / 'deliver', f'touch {self.tmp / "delivered"}; echo d\n')
+        rc, out = self.run_helper('--alert', alert, '--tidy', tidy, '--deliver', deliver)
+        self.assertEqual(rc, 0)
+        self.assertIn('no speech', out)
+        self.assertFalse((self.out / '20261123132950.txt').exists())
+        doc = json.loads((self.out / '20261123132950.json').read_text())
+        self.assertEqual(list(doc), ['file', 'sha256', 'duration_s', 'engine', 'command', 'wall_s', 'at', 'silent', 'detail'])
+        self.assertEqual((doc['file'], doc['sha256'], doc['silent']), ('20261123132950.WAV', rec['sha256'], True))
+        self.assertEqual(doc['detail'], {'reason': 'no speech found'})
+        self.assertFalse((self.tmp / 'tidied').exists() or (self.tmp / 'delivered').exists())
+        state = self.state_doc()
+        self.assertEqual(state.get('failures', {}), {})
+        self.assertEqual(list(state['done']['20261123132950.WAV']), ['transcribe'])
+        # Later runs, even long after, do nothing: no retry, no alert.
+        for later in (601, 7 * 3600, 3 * 86400):
+            with mock.patch.object(vr.time, 'time', return_value=time.time() + later):
+                _, out = self.run_helper('--alert', alert, '--tidy', tidy, '--deliver', deliver)
+            self.assertIn('nothing new', out)
+        self.assertFalse(alerts.exists())
+        _, out = self.run_helper('--tidy', tidy, '--deliver', deliver, command='status')
+        self.assertIn('done (no speech)', out)
+
+    def test_silent_recording_is_left_out_of_the_done_hook_lists(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        self.add('quiet.WAV', **{'import': 'imp-1'})
+        self.add('b.WAV', **{'import': 'imp-1'})
+        self.quiet_engine('*quiet.WAV')
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1'])
+        for what, names in (('recordings', ['a.WAV', 'b.WAV']), ('transcripts', ['a.txt', 'b.txt']),
+                            ('json', ['a.json', 'b.json'])):
+            self.assertEqual([Path(g).name for g in self.seen('imp-1', what).split('\n')], names)
+        records = json.loads(self.seen('imp-1', 'records'))
+        self.assertEqual([(r['file'], r.get('silent')) for r in records],
+                         [('a.WAV', None), ('quiet.WAV', True), ('b.WAV', None)])
+        self.assertIn('imp-1', self.state_doc()['imports'])
+        self.run_helper('--done', done)
+        self.assertEqual(self.calls_made(), ['imp-1'])
+
+    def test_an_import_of_only_silent_recordings_is_done_without_the_hook(self):
+        self.add('q1.WAV', **{'import': 'imp-1'})
+        self.add('q2.WAV', **{'import': 'imp-1'})
+        self.quiet_engine()
+        done = self.done_hook()
+        rc, out = self.run_helper('--done', done)
+        self.assertEqual(rc, 0)
+        self.assertIn('done skipped (no speech in 2 recordings)', out)
+        self.assertEqual(self.calls_made(), [])
+        state = self.state_doc()
+        self.assertIn('imp-1', state['imports'])
+        self.assertEqual(state.get('failures', {}), {})
+        _, out = self.run_helper('--done', done)
+        self.assertIn('nothing new', out)
+        self.assertEqual(self.calls_made(), [])
+
+    def test_check_counts_silent_recordings_as_complete(self):
+        self.add('a.WAV', **{'import': 'imp-1'})
+        self.add('quiet.WAV', **{'import': 'imp-1'})
+        self.quiet_engine('*quiet.WAV')
+        done = script(self.bin / 'done', 'echo acknowledged\n')
+        self.run_helper('--done', done)
+        rc, out = self.run_helper('--done', done, command='check')
+        report = json.loads(out)
+        self.assertEqual(rc, 0, report)
+        self.assertEqual((report['counts']['complete'], report['counts']['silent']), (2, 1))
+        # A silent JSON left from other audio with the same name is still a mismatch.
+        doc = json.loads((self.out / 'quiet.json').read_text())
+        doc['sha256'] = '0' * 64
+        (self.out / 'quiet.json').write_text(json.dumps(doc))
+        rc, out = self.run_helper('--done', done, command='check')
+        self.assertEqual(rc, 1)
+        self.assertIn({'file': 'quiet.WAV', 'stage': 'transcript missing or mismatched'}, json.loads(out)['issues'])
+
+    def test_exit_1_is_still_a_failure(self):
+        self.add('x.WAV', **{'import': 'imp-1'})
+        self.engine = script(self.bin / 'broken', 'echo boom >&2; exit 1\n')
+        done = self.done_hook()
+        self.run_helper('--done', done)
+        self.assertFalse((self.out / 'x.json').exists())
+        f = self.state_doc()['failures']['x.WAV']
+        self.assertEqual((f['count'], f['step']), (1, 'transcribe'))
+        self.assertIn('exit 1', f['error'])
+        self.assertEqual(self.calls_made(), [])
 
 
 class Check(Base):
