@@ -1380,7 +1380,8 @@ settings ($SETTINGS):
   recordings.out       where transcripts and hook output go (<recordings.dir>/_velcro)
   recordings.engine    a command line that prints the text: {file} is the recording (else it goes
                        last), {json} a file it may write; or claude or codex (velcro transcribe
-                       with that engine, your login).
+                       with that engine, your login). A command exiting 3 means no speech: the
+                       recording is done, with no text, tidy, deliver or done hook for it.
                        No default: velcro recordings waits until one is chosen
   recordings.tidy      command run after transcribing, with VELCRO_RECORDING, VELCRO_TRANSCRIPT,
                        VELCRO_TRANSCRIPT_JSON, VELCRO_RECORD and VELCRO_OUT; its output is kept

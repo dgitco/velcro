@@ -13,6 +13,8 @@ Each line of <dir>/.velcro-import.jsonl is one recording. For each one, in order
      line run with the file: {file} and {json} in it are replaced by the recording and a JSON file
      the command may write, otherwise the file goes last. The command prints the text.
      Writes <out>/<name>.txt, then <out>/<name>.json (written last: it marks the step done).
+     An engine that exits 3 says the recording has no speech: only <name>.json is written, with
+     "silent": true, nothing is counted as a failure, tidy and deliver are skipped.
   2. tidy (optional): --tidy <command>, run with the VELCRO_* variables below. What it prints is
      kept in <out>/<name>.tidy.txt.
   3. deliver (optional): --deliver <command>, the same, also with VELCRO_TIDIED. What it prints is
@@ -27,6 +29,8 @@ lines, a JSON list), VELCRO_RECORDINGS, VELCRO_TRANSCRIPTS and VELCRO_TRANSCRIPT
 manifest order) and VELCRO_OUT. Each of those four is also in a file named by the same variable plus _FILE
 (lists one path per line); the inline variable is left unset when it is over 64 KiB, so big imports read the
 files. It runs only when every transcript's metadata names that recording and its SHA-256.
+Recordings without speech are left out of the three path lists and marked "silent": true in VELCRO_RECORDS;
+an import with nothing but those never runs it and is kept as done.
 Its success is kept in the state, so it never runs twice for an import.
 Lines without an import id (written by an older velcro) never run it. A step that fails (exit status
 not 0, or a timeout) is tried again after 10, 20, 40 ... minutes (at most 6 hours); from the third
@@ -61,6 +65,7 @@ STEPS = ('transcribe', 'tidy', 'deliver')
 INLINE_MAX = 64 * 1024  # bytes per inline hook variable; beyond it only the *_FILE variable is set
 DONE_KEY = 'import {}'  # an import's key in the failure counts, next to the file names
 TRANSCRIBE = ('claude', 'codex')  # engines velcro transcribe runs
+SILENT_EXIT = 3  # an engine's way of saying "no speech in this recording": done, not a failure
 
 
 def say(*a):
@@ -303,12 +308,22 @@ class Run:
         return {'audio': self.dir / rec['file'], 'txt': self.out / f'{stem}.txt', 'json': self.out / f'{stem}.json',
                         'tidy': self.out / f'{stem}.tidy.txt', 'deliver': self.out / f'{stem}.deliver.txt'}
 
+    def silent(self, p):
+        """Whether the transcript metadata at p says the engine heard no speech (exit 3)."""
+        try:
+            doc = json.loads(read_small(p['json']))
+        except (TypeError, ValueError):
+            return False
+        return isinstance(doc, dict) and doc.get('silent') is True
+
     def next_step(self, rec):
         p = self.paths(rec)
         if not p['audio'].exists():
             return None, 'source gone'
         if not p['json'].exists():
             step = 'transcribe'
+        elif self.silent(p):  # nothing to tidy or deliver
+            return None, 'done'
         elif self.a.tidy and not p['tidy'].exists():
             step = 'tidy'
         elif self.a.deliver and not p['deliver'].exists():
@@ -370,6 +385,18 @@ class Run:
             r = run_limited(argv, limit)
         except subprocess.TimeoutExpired:
             raise RuntimeError(f'the engine took over {round(limit / 60)} min, stopped')
+        doc = {'file': rec['file'], 'sha256': rec.get('sha256'), 'duration_s': rec.get('duration_s'),
+               'engine': self.a.engine if self.a.engine in TRANSCRIBE else 'command', 'command': argv[0],
+               'wall_s': round(time.time() - t0), 'at': now_iso()}
+        if r.returncode == SILENT_EXIT:
+            # No .txt: an empty transcript would read as a broken one. The JSON alone marks it done.
+            doc.update(silent=True, detail={'reason': r.stderr.strip()[-300:]})
+            out = self.open_out()
+            try:
+                put_at(out, p['json'].name, json.dumps(doc, ensure_ascii=False, indent=1))
+            finally:
+                os.close(out)
+            return f"no speech (engine exit {SILENT_EXIT}) in {doc['wall_s']} s"
         if r.returncode:
             raise RuntimeError(f'the engine failed (exit {r.returncode}): {r.stderr.strip()[-300:]}')
         text, detail = r.stdout, None
@@ -385,9 +412,7 @@ class Run:
                 detail = None
         if not text.strip():
             raise RuntimeError('the engine printed no text')
-        doc = {'file': rec['file'], 'sha256': rec.get('sha256'), 'duration_s': rec.get('duration_s'),
-               'engine': self.a.engine if self.a.engine in TRANSCRIBE else 'command', 'command': argv[0],
-               'wall_s': round(time.time() - t0), 'at': now_iso(), 'detail': detail}
+        doc['detail'] = detail
         out = self.open_out()
         try:
             put_at(out, p['txt'].name, text if text.endswith('\n') else text + '\n')
@@ -483,18 +508,14 @@ class Run:
             return self.done_in(imp, recs, Path(work))
 
     def done_in(self, imp, recs, work):
-        audios, txts, jsons = [], [], []
+        audios, txts, jsons, records = [], [], [], []
         for i, rec in enumerate(recs):
             own = work / str(i)  # one folder per recording: names may repeat across folders
             own.mkdir(mode=0o700)
             p = self.paths(rec)
-            audio, got = self.copy_in(rec, p['audio'], own)
-            if rec.get('sha256') and got != rec['sha256']:
-                raise RuntimeError(f"{rec['file']}: SHA-256 doesn't match the import record")
-            audios.append(str(audio))
             out = self.open_out()
             try:
-                txt, doc = self.copy_out(out, p['txt'], own), self.copy_out(out, p['json'], own)
+                doc = self.copy_out(out, p['json'], own)
             finally:
                 os.close(out)
             # The same test as `check`, on the copies: a transcript left from an older recording with the same
@@ -505,13 +526,30 @@ class Run:
                 meta = None
             if (not isinstance(meta, dict)
                     or unicodedata.normalize('NFC', meta.get('file') or '') != unicodedata.normalize('NFC', rec['file'])
-                    or meta.get('sha256') != rec.get('sha256') or txt.stat().st_size == 0):
+                    or meta.get('sha256') != rec.get('sha256')):
                 raise RuntimeError(f"{rec['file']}: its transcript is missing or belongs to another recording")
+            if meta.get('silent') is True:  # no speech: nothing to hand on but its line
+                records.append(dict(rec, silent=True))
+                continue
+            audio, got = self.copy_in(rec, p['audio'], own)
+            if rec.get('sha256') and got != rec['sha256']:
+                raise RuntimeError(f"{rec['file']}: SHA-256 doesn't match the import record")
+            out = self.open_out()
+            try:
+                txt = self.copy_out(out, p['txt'], own)
+            finally:
+                os.close(out)
+            if txt.stat().st_size == 0:
+                raise RuntimeError(f"{rec['file']}: its transcript is missing or belongs to another recording")
+            audios.append(str(audio))
             txts.append(str(txt))
             jsons.append(str(doc))
+            records.append(rec)
+        if not audios:
+            return f'done skipped (no speech in {len(recs)} recording{"" if len(recs) == 1 else "s"})'
         # Lists and the import's lines also go in private files: a big import would not fit in the environment
         # (Linux refuses one variable over 128 KiB). The inline variables are set only when they fit.
-        values = {'VELCRO_RECORDS': json.dumps(recs, ensure_ascii=False), 'VELCRO_RECORDINGS': '\n'.join(audios),
+        values = {'VELCRO_RECORDS': json.dumps(records, ensure_ascii=False), 'VELCRO_RECORDINGS': '\n'.join(audios),
                   'VELCRO_TRANSCRIPTS': '\n'.join(txts), 'VELCRO_TRANSCRIPTS_JSON': '\n'.join(jsons)}
         env = dict(os.environ, VELCRO_IMPORT=imp, VELCRO_IMPORT_REVISION=self.revision(recs), VELCRO_OUT=str(self.out))
         for var, value in values.items():
@@ -580,7 +618,7 @@ class Run:
                         and p.suffix.lower().lstrip('.') in self.a.ext.split()
                         and unicodedata.normalize('NFC', p.name) not in self.registered]
         issues.extend({'file': n, 'stage': 'not in manifest'} for n in sorted(unregistered))
-        complete = 0
+        complete = silent = 0
         for rec in recs:
             if 'done' in self.a.require and not (isinstance(rec.get('import'), str) and rec['import']):
                 issues.append({'file': rec['file'], 'stage': 'import id missing for done hook'})
@@ -589,15 +627,19 @@ class Run:
                 p = self.paths(rec)
                 try:
                     doc = json.loads(read_small(p['json']))
-                    text_stat = p['txt'].lstat()
                     valid = (isinstance(doc, dict)
                              and unicodedata.normalize('NFC', doc.get('file') or '') == unicodedata.normalize('NFC', rec['file'])
-                             and doc.get('sha256') == rec.get('sha256')
-                             and stat.S_ISREG(text_stat.st_mode) and text_stat.st_size > 0)
+                             and doc.get('sha256') == rec.get('sha256'))
+                    quiet = valid and doc.get('silent') is True  # no speech: no text file is expected
+                    if valid and not quiet:
+                        text_stat = p['txt'].lstat()
+                        valid = stat.S_ISREG(text_stat.st_mode) and text_stat.st_size > 0
                 except (ValueError, TypeError, OSError):
-                    valid = False
+                    valid = quiet = False
                 if not valid:
                     stage = 'transcript missing or mismatched'
+                elif quiet:
+                    silent += 1
             if stage == 'done':
                 complete += 1
             else:
@@ -607,7 +649,7 @@ class Run:
                 if not self.import_finished(imp, group):
                     issues.append({'import': imp, 'stage': self.waiting(imp) or 'done hook pending'})
         report = {'ok': not issues, 'at': now_iso(), 'configured': configured,
-                  'counts': {'recordings': len(recs), 'complete': complete,
+                  'counts': {'recordings': len(recs), 'complete': complete, 'silent': silent,
                              'pending': len(recs) - complete, 'unregistered': len(unregistered)}, 'issues': issues}
         print(json.dumps(report, ensure_ascii=False))
         return 0 if report['ok'] else 1
@@ -618,6 +660,8 @@ class Run:
             say('no recordings in', self.dir / MANIFEST)
         for rec in recs:
             _, what = self.next_step(rec)
+            if what == 'done' and self.silent(self.paths(rec)):
+                what = 'done (no speech)'
             print(f"{rec['file']:28} {what}")
         if self.a.done:
             for imp in self.imports(recs):
